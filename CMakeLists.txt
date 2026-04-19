@@ -8,4 +8,5 @@ project(overtone
         DESCRIPTION "A Game Engine Written in C"
         LANGUAGES C)
 
-add_executable(hello src/main.c)
+add_executable(hello src/main.c src/window.c)
+target_include_directories(hello PUBLIC ./include)
