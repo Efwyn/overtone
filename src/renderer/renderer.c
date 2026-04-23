@@ -20,6 +20,16 @@ const bool enableValidationLayers = false;
 const bool enableValidationLayers = true;
 #endif
 
+inline u32 min_u32(u32 v1, u32 v2) {
+    return v1 < v2 ? v1 : v2;
+}
+inline u32 max_u32(u32 v1, u32 v2) {
+    return v1 > v2 ? v1 : v2;
+}
+inline u32 clamp_u32 (u32 val, u32 min, u32 max) {
+    return min_u32(max_u32(val, min), max);
+}
+
 //fwd declarations for debug utils
 VkResult CreateDebugUtilsMessengerEXT(VkInstance instance,
                                       const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
@@ -89,17 +99,17 @@ const VkApplicationInfo appInfo = {
 };
 
 Result renderer_initialize(const Window* window) {
+    if(enableValidationLayers) {
+        printf("[Renderer]: Validation Layers are ON!\n");
+    } else {
+        printf("[Renderer]: Validation Layers are OFF!\n");
+    }
+
     //
     // Vulkan Instance
     //
-    if(enableValidationLayers) {
-        printf("Validation Layers are ON!\n");
-    } else {
-        printf("Validation Layers are OFF!\n");
-    }
+    printf("[Renderer]: Creating Instance\n");
 
-
-    printf("Size of VulkanState Object: %zu bytes\n", sizeof(VulkanState));
 
     // Instance Layers. For now we're either using all or none,
     // but later how this is handled may change
@@ -143,7 +153,9 @@ Result renderer_initialize(const Window* window) {
     //
     // Setup the Debug Callback (if applicable)
     //
+
     if(enableValidationLayers) {
+    printf("[Renderer]: Setting up Debug Callback\n");
         VkDebugUtilsMessageSeverityFlagsEXT severityFlags = 
             VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
             VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
@@ -168,9 +180,11 @@ Result renderer_initialize(const Window* window) {
     //
     // Get a PhysicalDevice
     //
+    printf("[Renderer]: Selecting Physical Device\n");
+
     u32 physicalDeviceCount = 0;
     vkEnumeratePhysicalDevices(v_state.instance, &physicalDeviceCount, nullptr);
-    printf("%d PhysicalDevice(s) found!\n", physicalDeviceCount);
+    printf("[Renderer]: %d PhysicalDevice(s) found!\n", physicalDeviceCount);
 
     VkPhysicalDevice* physicalDeviceList = calloc(physicalDeviceCount, sizeof(VkPhysicalDevice));
     vkEnumeratePhysicalDevices(v_state.instance, &physicalDeviceCount, physicalDeviceList);
@@ -178,7 +192,7 @@ Result renderer_initialize(const Window* window) {
     VkPhysicalDeviceProperties props;
     for(u32 i = 0; i < physicalDeviceCount; i++) {
         vkGetPhysicalDeviceProperties(physicalDeviceList[i], &props);
-        printf("Device [%d]: %s\n", i, props.deviceName);
+        printf("[Renderer]: \tDevice [%d]: %s\n", i, props.deviceName);
     }
 
     // TODO: ENSURE PHYSICAL DEVICE SUPPORTS REQUIRED FEATURES
@@ -187,6 +201,8 @@ Result renderer_initialize(const Window* window) {
     //
     // Create A Surface from the window
     //
+    printf("[Renderer]: Creating Surface\n");
+
 #ifdef WIN32
     VkWin32SurfaceCreateInfoKHR surfaceCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
@@ -204,6 +220,7 @@ Result renderer_initialize(const Window* window) {
     //
     // Determine Queue Info
     //
+    printf("[Renderer]: Picking Queue Families\n");
 
     //Get a List of Properties for each queue family available on the physical device
     u32 queueFamilyCount = 0;
@@ -245,6 +262,7 @@ Result renderer_initialize(const Window* window) {
     //
     // Create Logical Device
     //
+    printf("[Renderer]: Creating Logical Device\n");
 
     VkPhysicalDeviceExtendedDynamicStateFeaturesEXT dynamicStateFeatures = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT,
@@ -283,9 +301,160 @@ Result renderer_initialize(const Window* window) {
 
     vkGetDeviceQueue(v_state.device, v_state.graphicsQueueIndex, 0, &v_state.graphicsQueue);
 
+    //
+    // SwapChain Creation
+    //
+    printf("[Renderer]: Creating Swap Chain\n");
 
+    VkSurfaceCapabilitiesKHR surfaceCapabilities;
+    u32 availableFormatsCount = 0;
+    VkSurfaceFormatKHR* availableSurfaceFormats;
+    u32 availablePresentModesCount = 0;
+    VkPresentModeKHR* availablePresentModes;
+    if(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(v_state.physicalDevice, v_state.surface, &surfaceCapabilities) != VK_SUCCESS) {
+        printf("ERROR: Failed to Get Surface Capabilites!\n");
+        return ResultFailure;
+    }
+
+    vkGetPhysicalDeviceSurfaceFormatsKHR(v_state.physicalDevice, v_state.surface, &availableFormatsCount, nullptr);
+    availableSurfaceFormats = calloc(availableFormatsCount, sizeof(VkSurfaceFormatKHR));
+    vkGetPhysicalDeviceSurfacePresentModesKHR(v_state.physicalDevice, v_state.surface, &availablePresentModesCount, nullptr);
+    availablePresentModes = calloc(availablePresentModesCount, sizeof(VkPresentModeKHR));
+
+    if(availableFormatsCount == 0 || availablePresentModesCount == 0) {
+        printf("ERROR: Failed to find any Surface Formats or Present Modes!\n");
+        return ResultFailure;
+    }
+
+    //populate the arrays
+    vkGetPhysicalDeviceSurfaceFormatsKHR(v_state.physicalDevice, v_state.surface, &availableFormatsCount, availableSurfaceFormats);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(v_state.physicalDevice, v_state.surface, &availablePresentModesCount, availablePresentModes);
+
+
+    //Pick A Surface Format
+    // We'll go with the first that supports B8R8G8A8_SRGB and SRGB nonlinear 
+    u32 formatIndex = 0;
+    VkSurfaceFormatKHR chosenSurfaceFormat = availableSurfaceFormats[0];
+    while(formatIndex < availableFormatsCount) {
+        if(availableSurfaceFormats[formatIndex].format == VK_FORMAT_B8G8R8A8_SRGB &&
+           availableSurfaceFormats[formatIndex].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+            chosenSurfaceFormat = availableSurfaceFormats[formatIndex];
+            break;
+        }
+        formatIndex++;
+    }
+
+    if(formatIndex == availableFormatsCount)
+        printf("Failed to find preferred format, using first available instead\n");
+
+
+    //Pick a Present Mode, preferred is Mailbox, but we'll use fifo if we can't find it
+    const VkPresentModeKHR preferredPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+    VkPresentModeKHR chosenPresentMode = VK_PRESENT_MODE_FIFO_KHR;
+    for(u32 i = 0; i < availablePresentModesCount; ++i) {
+        if(availablePresentModes[i] == preferredPresentMode) {
+            chosenPresentMode = preferredPresentMode;
+            break;
+        }
+    }
+
+    // Set the extents of the swapchain
+    // if capabilites.currentExtent already set, use that,
+    // otherwise clamp the window size to the capabilites max/min
+    VkExtent2D swapChainExtent;
+    if(surfaceCapabilities.currentExtent.width != UINT32_MAX) {
+        swapChainExtent = surfaceCapabilities.currentExtent;
+    }
+    else {
+        swapChainExtent.width = clamp_u32(window->width, surfaceCapabilities.minImageExtent.width, surfaceCapabilities.maxImageExtent.width);
+        swapChainExtent.height = clamp_u32(window->height, surfaceCapabilities.minImageExtent.height, surfaceCapabilities.maxImageExtent.height);
+    }
+
+    // Set the number of images we will have in the swapchain
+    // at least 1 more than the minimum, but don't exceed
+    // the max provided in surfaceCapabilites
+    // 0 in capabilities means no max given
+    const u32 defaultSwapchainImageCount = 3;
+    u32 minImageCount = max_u32(defaultSwapchainImageCount, surfaceCapabilities.minImageCount + 1);
+    if(0 < surfaceCapabilities.maxImageCount && surfaceCapabilities.maxImageCount < minImageCount) {
+        minImageCount = surfaceCapabilities.maxImageCount;
+    }
+
+
+    VkSwapchainCreateInfoKHR swapChainCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .surface = v_state.surface,
+        .minImageCount = minImageCount,
+        .imageFormat = chosenSurfaceFormat.format,
+        .imageColorSpace = chosenSurfaceFormat.colorSpace,
+        .imageExtent = swapChainExtent,
+        .imageArrayLayers = 1,
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .preTransform = surfaceCapabilities.currentTransform,
+        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        .presentMode = chosenPresentMode,
+        .clipped = true,
+        .oldSwapchain = nullptr
+    };
+
+    if(vkCreateSwapchainKHR(v_state.device, &swapChainCreateInfo, nullptr, &v_state.swapChain) != VK_SUCCESS) {
+        printf("ERROR: Failed to Create Swapchain!\n");
+        return ResultFailure;
+    }
+
+    if(vkGetSwapchainImagesKHR(v_state.device, v_state.swapChain, &v_state.swapChainLength, nullptr) != VK_SUCCESS) {
+        printf("ERROR: Failed to Get Swapchain Images!\n");
+        return ResultFailure;
+    }
+
+    //lifetime is until the end of program or we remake the swapchain with a new length
+    v_state.swapChainImages = calloc(v_state.swapChainLength, sizeof(VkImage));
+    if(!v_state.swapChainImages) {
+        printf("ERROR: Failed to allocate memory for swapchain images!\n");
+        return ResultFailure;
+    }
+
+    if(vkGetSwapchainImagesKHR(v_state.device, v_state.swapChain, &v_state.swapChainLength, v_state.swapChainImages) != VK_SUCCESS) {
+        printf("ERROR: Failed to Get Swapchain Images!\n");
+        return ResultFailure;
+    }
+
+    v_state.swapChainFormat = chosenSurfaceFormat;
+    v_state.swapChainExtent = swapChainExtent;
+
+    //Swapchain Image Views
+    VkImageViewCreateInfo imageViewCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = v_state.swapChainFormat.format,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount = 1,
+            .layerCount = 1
+        },
+    };
+
+    //lifetime is until the end of program or we remake the swapchain with a new length
+    v_state.swapChainImageViews = calloc(v_state.swapChainLength, sizeof(VkImageView));
+    if(!v_state.swapChainImageViews) {
+        printf("ERROR: Failed to allocate memory for Swapchain VkImageViews!\n");
+        return ResultFailure;
+    }
+
+    for(u32 i = 0; i < v_state.swapChainLength; i++) {
+        imageViewCreateInfo.image = v_state.swapChainImages[i];
+        if(vkCreateImageView(v_state.device, &imageViewCreateInfo, nullptr, &v_state.swapChainImageViews[i]) != VK_SUCCESS) {
+            printf("ERROR: Failed to Create Swapchain VkImageView!\n");
+            return ResultFailure;
+        }
+    }
 
     //clean up our dynamic memory
+    free(availableSurfaceFormats);
+    availableSurfaceFormats = nullptr;
+    free(availablePresentModes);
+    availablePresentModes = nullptr;
     free(queueFamilyProps);
     queueFamilyProps = nullptr;
     free(instanceExtensions);
@@ -297,10 +466,18 @@ Result renderer_initialize(const Window* window) {
 }
 
 void renderer_shutdown() {
+    printf("[Renderer]: Shutting Down\n");
     if(enableValidationLayers) {
         DestroyDebugUtilsMessengerEXT(v_state.instance, v_state.debugMessenger, nullptr);
     }
 
+    for(u32 i = 0; i < v_state.swapChainLength; i++) {
+        vkDestroyImageView(v_state.device, v_state.swapChainImageViews[i], nullptr);
+    }
+    free(v_state.swapChainImageViews);
+    free(v_state.swapChainImages);
+
+    vkDestroySwapchainKHR(v_state.device, v_state.swapChain, nullptr); 
     vkDestroyDevice(v_state.device, nullptr);
     vkDestroySurfaceKHR(v_state.instance, v_state.surface, nullptr);
     vkDestroyInstance(v_state.instance, nullptr);
