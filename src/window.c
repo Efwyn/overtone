@@ -26,13 +26,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 Result window_create(Window* window, const u32 width, const u32 height, char* const title) {
     assert(title != nullptr);
 
-    Window w = {
-        .hwnd = NULL,
-        .width = width,
-        .height = height,
-        .shouldClose = false
-    };
-
     WNDCLASSEX wc = {
         .cbSize = sizeof(WNDCLASSEX),
         .style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC,

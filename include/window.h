@@ -8,6 +8,7 @@
 
 #include "types.h"
 
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
 #define MAX_TITLE_LENGTH 64
