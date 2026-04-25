@@ -8,15 +8,16 @@
 #include "window.h"
 #include "renderer/renderer.h"
 
+
 #include <stdio.h>
-#include <stdlib.h>
+#include <stdlib.h> //EXIT_SUCCESS/EXIT_FAILURE
 
 int main() {
     //
     // Initialization
     //
     Window window;
-    if(window_create(&window, 1280, 720, "Hello Overtone!") == ResultFailure) {
+    if(window_create(&window, 800 , 600, "Hello Overtone!") == ResultFailure) {
         printf("ERROR! Failed to Create Window\n");
         return EXIT_FAILURE;
     }
@@ -28,7 +29,7 @@ int main() {
         return EXIT_FAILURE;
     }
 
-
+    //window_crea
     //
     // Main Loop
     //

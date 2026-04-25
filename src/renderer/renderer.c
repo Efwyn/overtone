@@ -5,14 +5,16 @@
 // Created On: 22-04-2026
 // ========================================
 #include "renderer/renderer.h"
+#include "types.h"
+#include "window.h"
 
 #include <stdlib.h>
 #include <stdio.h>
+
 #ifdef WIN32
     #define VK_USE_PLATFORM_WIN32_KHR
 #endif
 #include <vulkan/vulkan.h>
-#include "window.h"
 
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
@@ -20,15 +22,6 @@ const bool enableValidationLayers = false;
 const bool enableValidationLayers = true;
 #endif
 
-inline u32 min_u32(u32 v1, u32 v2) {
-    return v1 < v2 ? v1 : v2;
-}
-inline u32 max_u32(u32 v1, u32 v2) {
-    return v1 > v2 ? v1 : v2;
-}
-inline u32 clamp_u32 (u32 val, u32 min, u32 max) {
-    return min_u32(max_u32(val, min), max);
-}
 
 //fwd declarations for debug utils
 VkResult CreateDebugUtilsMessengerEXT(VkInstance instance,
@@ -42,6 +35,14 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         VkDebugUtilsMessageSeverityFlagBitsEXT severity,
         VkDebugUtilsMessageTypeFlagsEXT        type,
         const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData, void*);
+
+typedef struct BinaryFile {
+    char* data;
+    size_t size;
+} BinaryFile;
+
+Result loadBinaryFile(const char* filename, BinaryFile* file); 
+Result CreatePipeline();
 
 // Vulkan Validation Layers, useful for debugging
 #define VALIDATION_LAYER_COUNT 1
@@ -450,6 +451,15 @@ Result renderer_initialize(const Window* window) {
         }
     }
 
+    printf("Creating Pipeline\n");
+
+    if(CreatePipeline() != ResultOk) {
+        printf("ERROR: Failed to create pipeline!\n");
+        return ResultFailure;
+    }
+
+    printf("Renderer Initialization Complete\n");
+
     //clean up our dynamic memory
     free(availableSurfaceFormats);
     availableSurfaceFormats = nullptr;
@@ -470,6 +480,8 @@ void renderer_shutdown() {
     if(enableValidationLayers) {
         DestroyDebugUtilsMessengerEXT(v_state.instance, v_state.debugMessenger, nullptr);
     }
+
+    vkDestroyPipeline(v_state.device, v_state.graphicsPipeline, nullptr);
 
     for(u32 i = 0; i < v_state.swapChainLength; i++) {
         vkDestroyImageView(v_state.device, v_state.swapChainImageViews[i], nullptr);
@@ -514,13 +526,191 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         VkDebugUtilsMessageTypeFlagsEXT        type,
         const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData, void*) {
     if(severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-        printf("Validation Layer: severity: %s, type %x, msg: %s\n", "error", type, pCallbackData->pMessage);
+        printf("\033[91mValidation Layer: severity: %s, type %x, msg: %s\033[0m\n\n", "error", type, pCallbackData->pMessage);
     }
 
     if(severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
-        printf("Validation Layer: severity: %s, type %x, msg: %s\n", "warning", type, pCallbackData->pMessage);
+        printf("Validation Layer: severity: %s, type %x, msg: %s\033[0m\n\n", "warning", type, pCallbackData->pMessage);
     }
 
     return VK_FALSE;
 }
 
+Result loadBinaryFile(const char* filename, BinaryFile* file) {
+    FILE* fd;
+    if(fopen_s(&fd, filename, "rb") != 0) 
+        return ResultFailure;
+
+    //run to the end of the file and count how many bytes to allocate
+    if(fseek(fd, 0, SEEK_END) < 0) return ResultFailure;
+    size_t size = ftell(fd);
+    file->data = malloc(size);
+
+    if(fseek(fd, 0, SEEK_SET) < 0) return ResultFailure;
+
+    if(fread(file->data, size, 1, fd) < 0) return ResultFailure;
+
+    file->size = size;
+    fclose(fd);
+
+    return ResultOk;
+}
+
+Result CreateShaderModule(BinaryFile shaderFile, VkShaderModule* shaderModule) {
+    VkShaderModuleCreateInfo shaderModuleCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = shaderFile.size,
+        .pCode = (const u32*)shaderFile.data,
+    };
+
+    if(vkCreateShaderModule(v_state.device, &shaderModuleCreateInfo, nullptr, shaderModule) != VK_SUCCESS) {
+        return ResultFailure;
+    }
+    return ResultOk;
+}
+
+Result CreatePipeline() {
+    BinaryFile shaderFile = {};
+    if(loadBinaryFile("shaders/triangle.spv", &shaderFile) != ResultOk) {
+        printf("ERROR: Failed to load shader!\n");
+        return ResultFailure;
+    }
+
+    VkShaderModule shaderModule = nullptr;
+    if(CreateShaderModule(shaderFile, &shaderModule) != ResultOk) {
+        printf("ERROR: Failed to Create Shader Module");
+        return ResultFailure;
+    }
+
+    VkPipelineShaderStageCreateInfo vertexStageInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_VERTEX_BIT,
+        .module = shaderModule,
+        .pName = "vertMain",
+    };
+    VkPipelineShaderStageCreateInfo fragmentStageInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .module = shaderModule,
+        .pName = "fragMain"
+    };
+    VkPipelineShaderStageCreateInfo shaderStages[] = { 
+        vertexStageInfo,
+        fragmentStageInfo
+    };
+
+
+    //Vertex input. The format of the vertex data passed to the vertex shader.
+    //In this first example(triangle, the vertex info is in the shader
+    //itself
+    VkPipelineVertexInputStateCreateInfo vertexInputStateCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+    };
+    VkPipelineInputAssemblyStateCreateInfo inputAssemblyStateCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+    };
+
+
+    VkPipelineViewportStateCreateInfo viewportStateCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1,
+    };
+
+    //Rasterizer settings
+    VkPipelineRasterizationStateCreateInfo rasterizationStateCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .depthClampEnable = VK_FALSE,
+        .rasterizerDiscardEnable = VK_FALSE,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .cullMode = VK_CULL_MODE_BACK_BIT,
+        .frontFace = VK_FRONT_FACE_CLOCKWISE,
+        .depthBiasEnable = VK_FALSE,
+        .lineWidth = 1.0f
+    };
+
+    //Multisampling, (MSAA here?)
+    // Off for now
+    VkPipelineMultisampleStateCreateInfo multisampleStateCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .sampleShadingEnable = VK_FALSE,
+    };
+
+    //Color blending (i.e. how drawn fragments blend with fragments already
+    // drawn in the same location). Can be used for alpha blending
+    VkPipelineColorBlendAttachmentState blendAttachmentState = {
+        .blendEnable = VK_FALSE,
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+                          VK_COLOR_COMPONENT_G_BIT |
+                          VK_COLOR_COMPONENT_B_BIT |
+                          VK_COLOR_COMPONENT_A_BIT,
+    };
+    VkPipelineColorBlendStateCreateInfo colorBlendStateCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .logicOpEnable = VK_FALSE,
+        .logicOp = VK_LOGIC_OP_COPY,
+        .attachmentCount = 1,
+        .pAttachments = &blendAttachmentState,
+    };
+
+
+    //What parts of the pipeline will be dynamic. Here we're setting
+    //the viewport and scissor as dynamic so we can resize the window
+    //without recreating the pipeline?
+    VkDynamicState dynamicStates[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynamicStateCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = 2,
+        .pDynamicStates = dynamicStates,
+    };
+
+    //Pipeline Layout, this is where we will
+    // connect UBOs and push constants
+    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 0,
+        .pushConstantRangeCount = 0,
+    };
+
+    VkPipelineLayout pipelineLayout = nullptr;
+    if(vkCreatePipelineLayout(v_state.device, &pipelineLayoutCreateInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+        printf("ERROR: Failed to create pipelineLayout!\n");
+        return ResultFailure;
+    }
+
+
+    VkFormat attachmentFormats = v_state.swapChainFormat.format;
+
+    VkPipelineRenderingCreateInfo pipelineRenderingCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &attachmentFormats,
+    };
+    VkGraphicsPipelineCreateInfo pipelineCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount = 2,
+        .pStages = shaderStages,
+        .pVertexInputState = &vertexInputStateCreateInfo,
+        .pInputAssemblyState = &inputAssemblyStateCreateInfo,
+        .pViewportState = &viewportStateCreateInfo,
+        .pRasterizationState = &rasterizationStateCreateInfo,
+        .pMultisampleState = &multisampleStateCreateInfo,
+        .pColorBlendState = &colorBlendStateCreateInfo,
+        .pDynamicState = &dynamicStateCreateInfo,
+        .layout = pipelineLayout,
+        .renderPass = nullptr,
+        .pNext = &pipelineRenderingCreateInfo,
+    };
+
+    if(vkCreateGraphicsPipelines(v_state.device, nullptr, 1, &pipelineCreateInfo, nullptr, &v_state.graphicsPipeline) != VK_SUCCESS) {
+        printf("ERROR: Unable to create graphics pipeline!");
+        return ResultFailure;
+    }
+
+    vkDestroyPipelineLayout(v_state.device, pipelineLayout, nullptr);
+    vkDestroyShaderModule(v_state.device, shaderModule, nullptr);
+    free(shaderFile.data);
+    return ResultOk;
+}
