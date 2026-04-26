@@ -41,8 +41,8 @@ typedef struct BinaryFile {
     size_t size;
 } BinaryFile;
 
-Result loadBinaryFile(const char* filename, BinaryFile* file); 
-Result CreatePipeline();
+Result load_binary_file(const char* filename, BinaryFile* file); 
+Result create_pipeline();
 
 // Vulkan Validation Layers, useful for debugging
 #define VALIDATION_LAYER_COUNT 1
@@ -453,10 +453,35 @@ Result renderer_initialize(const Window* window) {
 
     printf("Creating Pipeline\n");
 
-    if(CreatePipeline() != ResultOk) {
+    if(create_pipeline() != ResultOk) {
         printf("ERROR: Failed to create pipeline!\n");
         return ResultFailure;
     }
+
+    // Command Pool and buffers
+    const VkCommandPoolCreateInfo commandPoolCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = v_state.graphicsQueueIndex,
+    };
+
+    if(vkCreateCommandPool(v_state.device, &commandPoolCreateInfo, nullptr, &v_state.commandPool) != VK_SUCCESS) {
+        printf("ERROR: Failed to create command pool!\n");
+        return ResultFailure;
+    }
+
+    const VkCommandBufferAllocateInfo commandBufferAllocInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = v_state.commandPool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+
+    if(vkAllocateCommandBuffers(v_state.device, &commandBufferAllocInfo, &v_state.commandBuffer) != VK_SUCCESS) {
+        printf("ERROR: Failed to Allocate Command Buffers!\n");
+        return ResultFailure;
+    }
+
 
     printf("Renderer Initialization Complete\n");
 
@@ -477,9 +502,9 @@ Result renderer_initialize(const Window* window) {
 
 void renderer_shutdown() {
     printf("[Renderer]: Shutting Down\n");
-    if(enableValidationLayers) {
-        DestroyDebugUtilsMessengerEXT(v_state.instance, v_state.debugMessenger, nullptr);
-    }
+
+    vkFreeCommandBuffers(v_state.device, v_state.commandPool, 1, &v_state.commandBuffer);
+    vkDestroyCommandPool(v_state.device, v_state.commandPool, nullptr);
 
     vkDestroyPipeline(v_state.device, v_state.graphicsPipeline, nullptr);
 
@@ -492,6 +517,10 @@ void renderer_shutdown() {
     vkDestroySwapchainKHR(v_state.device, v_state.swapChain, nullptr); 
     vkDestroyDevice(v_state.device, nullptr);
     vkDestroySurfaceKHR(v_state.instance, v_state.surface, nullptr);
+
+    if(enableValidationLayers) {
+        DestroyDebugUtilsMessengerEXT(v_state.instance, v_state.debugMessenger, nullptr);
+    }
     vkDestroyInstance(v_state.instance, nullptr);
 }
 
@@ -536,7 +565,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     return VK_FALSE;
 }
 
-Result loadBinaryFile(const char* filename, BinaryFile* file) {
+Result load_binary_file(const char* filename, BinaryFile* file) {
     FILE* fd;
     if(fopen_s(&fd, filename, "rb") != 0) 
         return ResultFailure;
@@ -556,7 +585,7 @@ Result loadBinaryFile(const char* filename, BinaryFile* file) {
     return ResultOk;
 }
 
-Result CreateShaderModule(BinaryFile shaderFile, VkShaderModule* shaderModule) {
+Result create_shader_module(BinaryFile shaderFile, VkShaderModule* shaderModule) {
     VkShaderModuleCreateInfo shaderModuleCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
         .codeSize = shaderFile.size,
@@ -569,15 +598,16 @@ Result CreateShaderModule(BinaryFile shaderFile, VkShaderModule* shaderModule) {
     return ResultOk;
 }
 
-Result CreatePipeline() {
+Result create_pipeline() {
     BinaryFile shaderFile = {};
-    if(loadBinaryFile("shaders/triangle.spv", &shaderFile) != ResultOk) {
+    if(load_binary_file
+        ("shaders/triangle.spv", &shaderFile) != ResultOk) {
         printf("ERROR: Failed to load shader!\n");
         return ResultFailure;
     }
 
     VkShaderModule shaderModule = nullptr;
-    if(CreateShaderModule(shaderFile, &shaderModule) != ResultOk) {
+    if(create_shader_module(shaderFile, &shaderModule) != ResultOk) {
         printf("ERROR: Failed to Create Shader Module");
         return ResultFailure;
     }
