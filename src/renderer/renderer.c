@@ -23,6 +23,8 @@ const bool enableValidationLayers = false;
 const bool enableValidationLayers = true;
 #endif
 
+#define FRAMES_IN_FLIGHT 2
+u32 frameIndex = 0;
 
 //fwd declarations for debug utils
 VkResult CreateDebugUtilsMessengerEXT(VkInstance instance,
@@ -83,11 +85,11 @@ typedef struct VulkanState {
     VkPipelineLayout         pipelineLayout;
     VkPipeline               graphicsPipeline;
     VkCommandPool            commandPool;
-    VkCommandBuffer          commandBuffer;
+    VkCommandBuffer          commandBuffers[FRAMES_IN_FLIGHT];
     //Synchronization
-    VkSemaphore              presentCompleteSemaphore;
-    VkSemaphore              renderFinishedSemaphore;
-    VkFence                  drawFence;
+    VkSemaphore              acquireSemaphores[FRAMES_IN_FLIGHT];
+    VkSemaphore*             submitSemaphores; //size based on swapchain image count
+    VkFence                  frameFences[FRAMES_IN_FLIGHT];
 } VulkanState;
 VulkanState v_state = {};
 
@@ -480,10 +482,10 @@ Result renderer_initialize(const Window* window) {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = v_state.commandPool,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
+        .commandBufferCount = FRAMES_IN_FLIGHT,
     };
 
-    if(vkAllocateCommandBuffers(v_state.device, &commandBufferAllocInfo, &v_state.commandBuffer) != VK_SUCCESS) {
+    if(vkAllocateCommandBuffers(v_state.device, &commandBufferAllocInfo, v_state.commandBuffers) != VK_SUCCESS) {
         printf("ERROR: Failed to Allocate Command Buffers!\n");
         return ResultFailure;
     }
@@ -499,19 +501,27 @@ Result renderer_initialize(const Window* window) {
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
         .flags = VK_FENCE_CREATE_SIGNALED_BIT,
     };
-    if(vkCreateSemaphore(v_state.device, &semaphoreCreateInfo, nullptr, &v_state.presentCompleteSemaphore) != VK_SUCCESS) {
-        printf("ERROR: Failed to create Semaphore!\n");
-        return ResultFailure;
-    }
-    if(vkCreateSemaphore(v_state.device, &semaphoreCreateInfo, nullptr, &v_state.renderFinishedSemaphore) != VK_SUCCESS) {
-        printf("ERROR: Failed to create Semaphore!\n");
-        return ResultFailure;
-    }
-    if(vkCreateFence(v_state.device, &fenceCreateInfo, nullptr, &v_state.drawFence) != VK_SUCCESS) {
-        printf("ERROR: Failed to create fence!\n");
-        return ResultFailure;
+
+    for(u32 i = 0; i < FRAMES_IN_FLIGHT; i++) {
+        if(vkCreateSemaphore(v_state.device, &semaphoreCreateInfo, nullptr, &v_state.acquireSemaphores[i]) != VK_SUCCESS) {
+            printf("ERROR: Failed to create Semaphore!\n");
+            return ResultFailure;
+        }
+        if(vkCreateFence(v_state.device, &fenceCreateInfo, nullptr, &v_state.frameFences[i]) != VK_SUCCESS) {
+            printf("ERROR: Failed to create fence!\n");
+            return ResultFailure;
+        }
     }
 
+
+    // Submission semapphores are instead based on swapchain length
+    v_state.submitSemaphores = calloc(v_state.swapChainLength, sizeof(VkSemaphore));
+    for(u32 i = 0; i < v_state.swapChainLength; i++) {
+        if(vkCreateSemaphore(v_state.device, &semaphoreCreateInfo, nullptr, &v_state.submitSemaphores[i]) != VK_SUCCESS) {
+            printf("ERROR: Failed to create Semaphore!\n");
+            return ResultFailure;
+        }
+    }
 
     printf("Renderer Initialization Complete\n");
 
@@ -528,11 +538,17 @@ Result renderer_initialize(const Window* window) {
 void renderer_shutdown() {
     printf("[Renderer]: Shutting Down\n");
 
-    vkDestroyFence(v_state.device, v_state.drawFence, nullptr);
-    vkDestroySemaphore(v_state.device, v_state.renderFinishedSemaphore, nullptr);
-    vkDestroySemaphore(v_state.device, v_state.presentCompleteSemaphore, nullptr);
+    for(u32 i = 0; i < FRAMES_IN_FLIGHT; i++) {
+        vkDestroyFence(v_state.device, v_state.frameFences[i], nullptr);
+        vkDestroySemaphore(v_state.device, v_state.acquireSemaphores[i], nullptr);
+    }
+    vkFreeCommandBuffers(v_state.device, v_state.commandPool, FRAMES_IN_FLIGHT, v_state.commandBuffers);
 
-    vkFreeCommandBuffers(v_state.device, v_state.commandPool, 1, &v_state.commandBuffer);
+    for(u32 i = 0; i < v_state.swapChainLength; i++) {
+        vkDestroySemaphore(v_state.device, v_state.submitSemaphores[i], nullptr);
+    }
+    free(v_state.submitSemaphores);
+
     vkDestroyCommandPool(v_state.device, v_state.commandPool, nullptr);
 
     vkDestroyPipeline(v_state.device, v_state.graphicsPipeline, nullptr);
@@ -553,7 +569,7 @@ void renderer_shutdown() {
     vkDestroyInstance(v_state.instance, nullptr);
 }
 
-void transition_image_layout(const u32 imageIndex,
+void transition_image_layout(VkCommandBuffer commandBuffer, const u32 imageIndex,
                                const VkImageLayout oldLayout,
                                const VkImageLayout newLayout,
                                const VkAccessFlags2 oldAccessFlags,
@@ -587,21 +603,21 @@ void transition_image_layout(const u32 imageIndex,
         .pImageMemoryBarriers = &barrier,
     };
 
-    vkCmdPipelineBarrier2(v_state.commandBuffer, &dependencyInfo);
+    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
 }
 
 
-Result record_command_buffer(const u32 imageIndex) {
+Result record_command_buffer(VkCommandBuffer commandBuffer, const u32 imageIndex) {
     VkCommandBufferBeginInfo beginInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
     };
 
-    if(vkBeginCommandBuffer(v_state.commandBuffer, &beginInfo) != VK_SUCCESS) {
+    if(vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
         printf("ERROR: Failed to Begin Command Buffer!\n");
         return ResultFailure;
     }
 
-    transition_image_layout(imageIndex, 
+    transition_image_layout(commandBuffer, imageIndex, 
                             VK_IMAGE_LAYOUT_UNDEFINED,
                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                             VK_ACCESS_2_NONE,
@@ -631,8 +647,8 @@ Result record_command_buffer(const u32 imageIndex) {
         .pColorAttachments = &colorAttachmentInfo,
     };
 
-    vkCmdBeginRendering(v_state.commandBuffer, &renderingInfo);
-    vkCmdBindPipeline(v_state.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, v_state.graphicsPipeline);
+    vkCmdBeginRendering(commandBuffer, &renderingInfo);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, v_state.graphicsPipeline);
 
     VkViewport viewport = {
         .width = v_state.swapChainExtent.width,
@@ -644,14 +660,14 @@ Result record_command_buffer(const u32 imageIndex) {
         .extent = v_state.swapChainExtent,
     };*/
     //VkScissor scissor;
-    vkCmdSetViewport(v_state.commandBuffer, 0, 1, &viewport);
-    vkCmdSetScissor(v_state.commandBuffer, 0, 1, &renderArea);
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(commandBuffer, 0, 1, &renderArea);
 
-    vkCmdDraw(v_state.commandBuffer, 3, 1, 0, 0);
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
-    vkCmdEndRendering(v_state.commandBuffer);
+    vkCmdEndRendering(commandBuffer);
 
-    transition_image_layout(imageIndex,
+    transition_image_layout(commandBuffer, imageIndex,
                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                             VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -660,7 +676,7 @@ Result record_command_buffer(const u32 imageIndex) {
                             VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
 
 
-    if(vkEndCommandBuffer(v_state.commandBuffer) != VK_SUCCESS) {
+    if(vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
         printf("ERROR: Failed to record command buffer!\n");
         return ResultFailure;
     }
@@ -669,42 +685,59 @@ Result record_command_buffer(const u32 imageIndex) {
 }
 
 Result renderer_draw_frame() {
+    //
+    // Wait on fences and sema
+    //
+    VkFence frameFence = v_state.frameFences[frameIndex];
     //First wait for the previous frame to finish drawing
-    if(vkWaitForFences(v_state.device, 1, &v_state.drawFence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+    if(vkWaitForFences(v_state.device, 1, &frameFence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
         printf("ERROR: Failed to wait for the fence\n");
         return ResultFailure;
     }
-    vkResetFences(v_state.device, 1, &v_state.drawFence);
+    vkResetFences(v_state.device, 1, &frameFence);
 
     u32 imageIndex = 0;
-    if(vkAcquireNextImageKHR(v_state.device, v_state.swapChain, UINT64_MAX, v_state.presentCompleteSemaphore, nullptr, &imageIndex) != VK_SUCCESS) {
+    VkSemaphore acquireSemaphore = v_state.acquireSemaphores[frameIndex];
+    if(vkAcquireNextImageKHR(v_state.device, v_state.swapChain, UINT64_MAX, acquireSemaphore, nullptr, &imageIndex) != VK_SUCCESS) {
         printf("ERROR: Failed to retrieve next image!\n");
         return ResultFailure;
     }
+    //index submit semaphore by image index rather than in-flight index
+    VkSemaphore submitSemaphore = v_state.submitSemaphores[imageIndex];
+    
 
-    record_command_buffer(imageIndex);
+
+    //
+    // Draw and Submit Commands
+    //
+    VkCommandBuffer drawCommandBuffer = v_state.commandBuffers[frameIndex];
+    record_command_buffer(drawCommandBuffer, imageIndex);
 
     VkPipelineStageFlags waitDestinationStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     const VkSubmitInfo submitInfo = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &v_state.presentCompleteSemaphore,
+        .pWaitSemaphores = &acquireSemaphore,
         .pWaitDstStageMask = &waitDestinationStageMask,
         .commandBufferCount = 1,
-        .pCommandBuffers = &v_state.commandBuffer,
+        .pCommandBuffers = &drawCommandBuffer,
         .signalSemaphoreCount = 1,
-        .pSignalSemaphores = &v_state.renderFinishedSemaphore
+        .pSignalSemaphores = &submitSemaphore
     };
 
-    if(vkQueueSubmit(v_state.graphicsQueue, 1, &submitInfo, v_state.drawFence) != VK_SUCCESS) {
+    if(vkQueueSubmit(v_state.graphicsQueue, 1, &submitInfo, frameFence) != VK_SUCCESS) {
         printf("ERROR: FAiled to submit command buffer to graphics queue\n");
         return ResultFailure;
     }
 
+
+    //
+    // Frame Presentation
+    //
     const VkPresentInfoKHR presentInfo = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &v_state.renderFinishedSemaphore,
+        .pWaitSemaphores = &submitSemaphore,
         .swapchainCount = 1,
         .pSwapchains = &v_state.swapChain,
         .pImageIndices = &imageIndex,
@@ -716,6 +749,7 @@ Result renderer_draw_frame() {
         return ResultFailure;
     }
 
+    frameIndex = (frameIndex + 1) % FRAMES_IN_FLIGHT;
     return ResultOk; 
 }
 
