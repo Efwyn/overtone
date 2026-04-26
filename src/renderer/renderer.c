@@ -451,6 +451,9 @@ Result renderer_initialize(const Window* window) {
         }
     }
 
+    //
+    // graphicsPipeline
+    //
     printf("Creating Pipeline\n");
 
     if(create_pipeline() != ResultOk) {
@@ -458,7 +461,9 @@ Result renderer_initialize(const Window* window) {
         return ResultFailure;
     }
 
+    //
     // Command Pool and buffers
+    //
     const VkCommandPoolCreateInfo commandPoolCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -483,25 +488,48 @@ Result renderer_initialize(const Window* window) {
     }
 
 
+    //
+    // Synchronization Objects
+    //
+    const VkSemaphoreCreateInfo semaphoreCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+    };
+    const VkFenceCreateInfo fenceCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+    };
+    if(vkCreateSemaphore(v_state.device, &semaphoreCreateInfo, nullptr, &v_state.presentCompleteSemaphore) != VK_SUCCESS) {
+        printf("ERROR: Failed to create Semaphore!\n");
+        return ResultFailure;
+    }
+    if(vkCreateSemaphore(v_state.device, &semaphoreCreateInfo, nullptr, &v_state.renderFinishedSemaphore) != VK_SUCCESS) {
+        printf("ERROR: Failed to create Semaphore!\n");
+        return ResultFailure;
+    }
+    if(vkCreateFence(v_state.device, &fenceCreateInfo, nullptr, &v_state.drawFence) != VK_SUCCESS) {
+        printf("ERROR: Failed to create fence!\n");
+        return ResultFailure;
+    }
+
+
     printf("Renderer Initialization Complete\n");
 
     //clean up our dynamic memory
     free(availableSurfaceFormats);
-    availableSurfaceFormats = nullptr;
     free(availablePresentModes);
-    availablePresentModes = nullptr;
     free(queueFamilyProps);
-    queueFamilyProps = nullptr;
     free(instanceExtensions);
-    instanceExtensions = nullptr;
     free(physicalDeviceList);
-    physicalDeviceList = nullptr;
 
     return ResultOk;
 }
 
 void renderer_shutdown() {
     printf("[Renderer]: Shutting Down\n");
+
+    vkDestroyFence(v_state.device, v_state.drawFence, nullptr);
+    vkDestroySemaphore(v_state.device, v_state.renderFinishedSemaphore, nullptr);
+    vkDestroySemaphore(v_state.device, v_state.presentCompleteSemaphore, nullptr);
 
     vkFreeCommandBuffers(v_state.device, v_state.commandPool, 1, &v_state.commandBuffer);
     vkDestroyCommandPool(v_state.device, v_state.commandPool, nullptr);
@@ -525,7 +553,7 @@ void renderer_shutdown() {
 }
 
 void renderer_draw_frame() {
-    //Draw one frame
+
 }
 
 VkResult CreateDebugUtilsMessengerEXT(VkInstance instance,
