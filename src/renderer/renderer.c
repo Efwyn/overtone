@@ -8,6 +8,7 @@
 #include "types.h"
 #include "window.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
 
@@ -552,8 +553,174 @@ void renderer_shutdown() {
     vkDestroyInstance(v_state.instance, nullptr);
 }
 
-void renderer_draw_frame() {
+void transition_image_layout(const u32 imageIndex,
+                               const VkImageLayout oldLayout,
+                               const VkImageLayout newLayout,
+                               const VkAccessFlags2 oldAccessFlags,
+                               const VkAccessFlags2 newAccessFlags,
+                               const VkPipelineStageFlags2 oldStageFlags,
+                               const VkPipelineStageFlags2 newStageFlags) {
 
+    const VkImageMemoryBarrier2 barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = oldStageFlags,
+        .srcAccessMask = oldAccessFlags,
+        .dstStageMask = newStageFlags,
+        .dstAccessMask = newAccessFlags,
+        .oldLayout = oldLayout,
+        .newLayout = newLayout,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = v_state.swapChainImages[imageIndex],
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1
+        }
+    };
+
+    const VkDependencyInfo dependencyInfo = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &barrier,
+    };
+
+    vkCmdPipelineBarrier2(v_state.commandBuffer, &dependencyInfo);
+}
+
+
+Result record_command_buffer(const u32 imageIndex) {
+    VkCommandBufferBeginInfo beginInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+    };
+
+    if(vkBeginCommandBuffer(v_state.commandBuffer, &beginInfo) != VK_SUCCESS) {
+        printf("ERROR: Failed to Begin Command Buffer!\n");
+        return ResultFailure;
+    }
+
+    transition_image_layout(imageIndex, 
+                            VK_IMAGE_LAYOUT_UNDEFINED,
+                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                            VK_ACCESS_2_NONE,
+                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
+
+    const VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+    const VkRenderingAttachmentInfo colorAttachmentInfo = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = v_state.swapChainImageViews[imageIndex],
+        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue = clearColor,
+    };
+
+    VkRect2D renderArea = {
+        .offset = {0, 0},
+        .extent = v_state.swapChainExtent,
+    };
+    const VkRenderingInfo renderingInfo = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .renderArea = renderArea,
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &colorAttachmentInfo,
+    };
+
+    vkCmdBeginRendering(v_state.commandBuffer, &renderingInfo);
+    vkCmdBindPipeline(v_state.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, v_state.graphicsPipeline);
+
+    VkViewport viewport = {
+        .width = v_state.swapChainExtent.width,
+        .height = v_state.swapChainExtent.height,
+    };
+
+    /*
+    VkRect2D scissor = {
+        .extent = v_state.swapChainExtent,
+    };*/
+    //VkScissor scissor;
+    vkCmdSetViewport(v_state.commandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(v_state.commandBuffer, 0, 1, &renderArea);
+
+    vkCmdDraw(v_state.commandBuffer, 3, 1, 0, 0);
+
+    vkCmdEndRendering(v_state.commandBuffer);
+
+    transition_image_layout(imageIndex,
+                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                            VK_ACCESS_2_NONE,
+                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
+
+
+    if(vkEndCommandBuffer(v_state.commandBuffer) != VK_SUCCESS) {
+        printf("ERROR: Failed to record command buffer!\n");
+        return ResultFailure;
+    }
+
+    return ResultOk;
+}
+
+Result renderer_draw_frame() {
+    //First wait for the previous frame to finish drawing
+    if(vkWaitForFences(v_state.device, 1, &v_state.drawFence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+        printf("ERROR: Failed to wait for the fence\n");
+        return ResultFailure;
+    }
+    vkResetFences(v_state.device, 1, &v_state.drawFence);
+
+    u32 imageIndex = 0;
+    if(vkAcquireNextImageKHR(v_state.device, v_state.swapChain, UINT64_MAX, v_state.presentCompleteSemaphore, nullptr, &imageIndex) != VK_SUCCESS) {
+        printf("ERROR: Failed to retrieve next image!\n");
+        return ResultFailure;
+    }
+
+    record_command_buffer(imageIndex);
+
+    VkPipelineStageFlags waitDestinationStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    const VkSubmitInfo submitInfo = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &v_state.presentCompleteSemaphore,
+        .pWaitDstStageMask = &waitDestinationStageMask,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &v_state.commandBuffer,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &v_state.renderFinishedSemaphore
+    };
+
+    if(vkQueueSubmit(v_state.graphicsQueue, 1, &submitInfo, v_state.drawFence) != VK_SUCCESS) {
+        printf("ERROR: FAiled to submit command buffer to graphics queue\n");
+        return ResultFailure;
+    }
+
+    const VkPresentInfoKHR presentInfo = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &v_state.renderFinishedSemaphore,
+        .swapchainCount = 1,
+        .pSwapchains = &v_state.swapChain,
+        .pImageIndices = &imageIndex,
+        .pResults = nullptr
+    };
+
+    if(vkQueuePresentKHR(v_state.graphicsQueue, &presentInfo) != VK_SUCCESS) {
+        printf("ERROR: Failed to present image!\n");
+        return ResultFailure;
+    }
+
+    return ResultOk; 
+}
+
+void renderer_wait_idle() {
+    vkDeviceWaitIdle(v_state.device);
 }
 
 VkResult CreateDebugUtilsMessengerEXT(VkInstance instance,

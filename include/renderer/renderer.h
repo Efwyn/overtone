@@ -11,4 +11,5 @@
 
 Result renderer_initialize(const Window* window);
 void   renderer_shutdown();
-void   renderer_draw_frame();
+Result renderer_draw_frame();
+void   renderer_wait_idle();

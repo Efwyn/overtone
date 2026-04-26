@@ -29,7 +29,6 @@ int main() {
         return EXIT_FAILURE;
     }
 
-    //window_crea
     //
     // Main Loop
     //
@@ -42,8 +41,12 @@ int main() {
         //Loop Logic
 
         //Draw Frame
-        renderer_draw_frame();
+        if(renderer_draw_frame() != ResultOk) {
+            printf("ERROR: Failed to draw frame\n");
+            running = false;
+        }
     }
+    renderer_wait_idle();
 
     //
     // Cleanup
