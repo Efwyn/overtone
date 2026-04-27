@@ -7,9 +7,8 @@
 #pragma once
 
 #include "types.h"
-#include "window.h"
 
-Result renderer_initialize(Window* window);
+Result renderer_initialize();
 void   renderer_shutdown();
 Result renderer_draw_frame();
 void   renderer_wait_idle();

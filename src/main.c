@@ -19,14 +19,13 @@ int main() {
     //
     timer_init();
 
-    Window* window;
-    if(window_create(800 , 600, "Hello Overtone!", &window)) {
+    if(window_create(800 , 600, "Hello Overtone!")) {
         printf("ERROR! Failed to Create Window\n");
         return EXIT_FAILURE;
     }
     window_set_callback_resize(renderer_signal_framebuffer_resized);
 
-    if(renderer_initialize(window) == ResultFailure) {
+    if(renderer_initialize() == ResultFailure) {
         printf("ERROR! Failed to Initialize Renderer\n");
         return EXIT_FAILURE;
     }
@@ -41,7 +40,7 @@ int main() {
     bool running = true;
     while(running) {
         window_poll_events();
-        if(window->shouldClose == true) {
+        if(window_should_close()) {
             printf("Window closed, terminating loop\n");
             running = false;
             break;

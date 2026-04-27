@@ -81,7 +81,6 @@ typedef struct VulkanState {
     VkDevice                 device;
     u32                      graphicsQueueIndex;
     VkQueue                  graphicsQueue;
-    Window*                  window;
     bool                     framebufferResized;
     //Swapchain
     VkSwapchainKHR           swapChain;
@@ -111,13 +110,12 @@ const VkApplicationInfo appInfo = {
     .apiVersion         = VK_API_VERSION_1_4
 };
 
-Result renderer_initialize(Window* window) {
+Result renderer_initialize() {
     if(enableValidationLayers) {
         printf("[Renderer]: Validation Layers are ON!\n");
     } else {
         printf("[Renderer]: Validation Layers are OFF!\n");
     }
-    v_state.window = window;
     v_state.framebufferResized = false;
 
     //

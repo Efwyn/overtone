@@ -15,6 +15,13 @@
 
 #define WINDOW_CLASSNAME "OvertoneWindowClass"
 
+typedef struct Window {
+    HWND hwnd;
+    char title[MAX_TITLE_LENGTH];
+    u32 width, height;
+    bool shouldClose;
+} Window;
+
 typedef struct WindowCallbacks {
     void (*resizeCallback)(u32, u32);
 } WindowCallbacks;
@@ -40,7 +47,7 @@ LRESULT CALLBACK WindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 
 
-Result window_create(const u32 width, const u32 height, char* const title, Window** windowHandle) {
+Result window_create(const u32 width, const u32 height, char* const title) {
     assert(title != nullptr);
 
     WNDCLASSEX wc = {
@@ -73,7 +80,6 @@ Result window_create(const u32 width, const u32 height, char* const title, Windo
 
     if(!gameWindow.hwnd) {
         printf("ERROR: Failed to create Win32 Window!\n");
-        *windowHandle = nullptr;
         return ResultFailure;
     }
 
@@ -82,13 +88,11 @@ Result window_create(const u32 width, const u32 height, char* const title, Windo
     gameWindow.shouldClose = false;
     if(strcpy_s(gameWindow.title, MAX_TITLE_LENGTH, title) != 0) {
         printf("Error setting window title\n");
-        *windowHandle = nullptr;
         return ResultFailure;
     }
 
     ShowWindow(gameWindow.hwnd, SW_SHOW);
 
-    *windowHandle = &gameWindow;
     return ResultOk;
 }
 

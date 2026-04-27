@@ -15,18 +15,10 @@
 
 #define MAX_TITLE_LENGTH 64
 
-
-typedef struct Window {
-    HWND hwnd;
-    char title[MAX_TITLE_LENGTH];
-    u32 width, height;
-    bool shouldClose;
-} Window;
-
-Result     window_create(const u32 width, const u32 height, char* const title, Window** windowHandle);
+Result     window_create(const u32 width, const u32 height, char* const title);
 void       window_cleanup();
 void       window_poll_events();
-void       window_show();
+bool       window_should_close();
 void       window_get_framebuffer_size(u32* width, u32* height);
 void       window_set_callback_resize(void (*resizeCallback)(u32, u32));
 VkResult   window_create_vulkan_surface(const VkInstance instance, VkSurfaceKHR* surface);
