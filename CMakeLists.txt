@@ -56,7 +56,7 @@ function(add_shaders TARGET_NAME)
    )
 endfunction()
 
-add_executable(hello src/main.c src/window.c src/renderer/renderer.c)
+add_executable(hello src/main.c src/window.c src/timer.c src/renderer/renderer.c)
 target_include_directories(hello PUBLIC ./include ./include/renderer)
 target_link_libraries(hello PRIVATE Vulkan::Vulkan)
 

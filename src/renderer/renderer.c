@@ -7,6 +7,7 @@
 #include "renderer/renderer.h"
 #include "types.h"
 #include "window.h"
+#include "timer.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -21,6 +22,13 @@
 const bool enableValidationLayers = false;
 #else
 const bool enableValidationLayers = true;
+#endif
+
+//#define PRINT_FRAME_TIMING
+#ifdef PRINT_FRAME_TIMING
+    const bool printFrameTiming = true;
+#else
+    const bool printFrameTiming = false;
 #endif
 
 #define FRAMES_IN_FLIGHT 2
@@ -353,7 +361,9 @@ Result renderer_initialize(const Window* window) {
 
 
     //Pick a Present Mode, preferred is Mailbox, but we'll use fifo if we can't find it
-    const VkPresentModeKHR preferredPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+    //VK_PRESENT_MODE_IMMEDIATE_KHR is Vsync off
+    const VkPresentModeKHR preferredPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    //const VkPresentModeKHR preferredPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
     VkPresentModeKHR chosenPresentMode = VK_PRESENT_MODE_FIFO_KHR;
     for(u32 i = 0; i < availablePresentModesCount; ++i) {
         if(availablePresentModes[i] == preferredPresentMode) {
@@ -656,7 +666,6 @@ Result record_command_buffer(VkCommandBuffer commandBuffer, const u32 imageIndex
     };
 
     /*
-    VkRect2D scissor = {
         .extent = v_state.swapChainExtent,
     };*/
     //VkScissor scissor;
@@ -685,11 +694,12 @@ Result record_command_buffer(VkCommandBuffer commandBuffer, const u32 imageIndex
 }
 
 Result renderer_draw_frame() {
+    TIMESTEP(frameStartTime);
+    //TimeStep frameStartTime = timer_get_timeval();
     //
-    // Wait on fences and sema
+    // Wait on fence
     //
     VkFence frameFence = v_state.frameFences[frameIndex];
-    //First wait for the previous frame to finish drawing
     if(vkWaitForFences(v_state.device, 1, &frameFence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
         printf("ERROR: Failed to wait for the fence\n");
         return ResultFailure;
@@ -704,14 +714,17 @@ Result renderer_draw_frame() {
     }
     //index submit semaphore by image index rather than in-flight index
     VkSemaphore submitSemaphore = v_state.submitSemaphores[imageIndex];
-    
 
 
+
+    TIMESTEP(recordStartTime);
     //
     // Draw and Submit Commands
     //
     VkCommandBuffer drawCommandBuffer = v_state.commandBuffers[frameIndex];
     record_command_buffer(drawCommandBuffer, imageIndex);
+
+    TIMESTEP(submitStartTime);
 
     VkPipelineStageFlags waitDestinationStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     const VkSubmitInfo submitInfo = {
@@ -731,6 +744,7 @@ Result renderer_draw_frame() {
     }
 
 
+    TIMESTEP(presentStartTime);
     //
     // Frame Presentation
     //
@@ -747,6 +761,16 @@ Result renderer_draw_frame() {
     if(vkQueuePresentKHR(v_state.graphicsQueue, &presentInfo) != VK_SUCCESS) {
         printf("ERROR: Failed to present image!\n");
         return ResultFailure;
+    }
+
+    TIMESTEP(frameEndTime);
+
+    if(printFrameTiming) {
+        printf("fence: %llu rec: %llu subm: %llu pre: %llu\n",
+                recordStartTime - frameStartTime,
+                submitStartTime - recordStartTime,
+                presentStartTime - submitStartTime,
+                frameEndTime - presentStartTime);
     }
 
     frameIndex = (frameIndex + 1) % FRAMES_IN_FLIGHT;
