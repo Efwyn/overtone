@@ -26,3 +26,4 @@ typedef enum Result {
     ResultOk,
     ResultFailure
 } Result;
+

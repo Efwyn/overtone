@@ -4,26 +4,43 @@
 // Author: Morgan Carpenetti
 // Created On: 19-04-2026
 // ============================================
-#include "types.h"
 #include "window.h"
+#include "types.h"
 
 #include <stdio.h>
 #include <assert.h>
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 #define WINDOW_CLASSNAME "OvertoneWindowClass"
 
-LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+typedef struct WindowCallbacks {
+    void (*resizeCallback)(u32, u32);
+} WindowCallbacks;
+WindowCallbacks callbacks;
+
+Window gameWindow;
+
+LRESULT CALLBACK WindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch(msg) {
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;
+        case WM_SIZE:
+            gameWindow.width  = LOWORD(lParam);
+            gameWindow.height = HIWORD(lParam);
+            if(callbacks.resizeCallback != nullptr) {
+                callbacks.resizeCallback(gameWindow.width, gameWindow.height);
+            }
+            return 0;
         default:
-            return DefWindowProc(hwnd, msg, wParam, lParam);
+            return DefWindowProc(hWnd, msg, wParam, lParam);
     }
 }
 
 
-Result window_create(Window* window, const u32 width, const u32 height, char* const title) {
+Result window_create(const u32 width, const u32 height, char* const title, Window** windowHandle) {
     assert(title != nullptr);
 
     WNDCLASSEX wc = {
@@ -36,14 +53,16 @@ Result window_create(Window* window, const u32 width, const u32 height, char* co
 
     RegisterClassEx(&wc);
 
-    RECT wr = {0, 0, width, height};
-    AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, false);
 
-    HWND hwnd = CreateWindowEx(
+    DWORD windowStyle = WS_OVERLAPPEDWINDOW;
+    RECT wr = {0, 0, width, height};
+    AdjustWindowRect(&wr, windowStyle, false);
+
+    gameWindow.hwnd = CreateWindowEx(
             0,
             WINDOW_CLASSNAME,
             title,
-            WS_OVERLAPPEDWINDOW,
+            windowStyle,
             300, 300,
             wr.right - wr.left,
             wr.bottom - wr.top,
@@ -52,44 +71,67 @@ Result window_create(Window* window, const u32 width, const u32 height, char* co
             GetModuleHandle(nullptr),
             nullptr);
 
-    if(!hwnd) return ResultFailure;
-
-    window->hwnd = hwnd;
-    window->width = width;
-    window->height = height;
-    window->shouldClose = false;
-    if(strcpy_s(window->title, MAX_TITLE_LENGTH, title) != 0) {
-        printf("Error setting window title\n");
+    if(!gameWindow.hwnd) {
+        printf("ERROR: Failed to create Win32 Window!\n");
+        *windowHandle = nullptr;
+        return ResultFailure;
     }
 
+    gameWindow.width = width;
+    gameWindow.height = height;
+    gameWindow.shouldClose = false;
+    if(strcpy_s(gameWindow.title, MAX_TITLE_LENGTH, title) != 0) {
+        printf("Error setting window title\n");
+        *windowHandle = nullptr;
+        return ResultFailure;
+    }
+
+    ShowWindow(gameWindow.hwnd, SW_SHOW);
+
+    *windowHandle = &gameWindow;
     return ResultOk;
 }
 
-void window_cleanup(Window* window) {
-    DestroyWindow(window->hwnd);
-    memset(window, 0, sizeof(Window));
+void window_cleanup() {
+    DestroyWindow(gameWindow.hwnd);
 }
 
-
-
-bool window_poll_events() {
-    bool shouldClose = false;
+void window_poll_events() {
     MSG msg;
 
     while(PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-
         if(msg.message == WM_QUIT) {
-            printf("Closing Application\n");
-            shouldClose = true;
+            gameWindow.shouldClose = true;
+        }
+        else {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
         }
     }
-
-    return shouldClose;
 }
 
-void window_show(const Window* window) {
-    assert(window->hwnd != NULL);
-    ShowWindow(window->hwnd, SW_SHOW);
+bool window_should_close() {
+    return gameWindow.shouldClose;
+}
+
+void window_get_framebuffer_size(u32 *width, u32 *height) {
+    *width = gameWindow.width;
+    *height = gameWindow.height;
+}
+
+void window_set_callback_resize(void (*resizeCallback)(u32, u32)) {
+    callbacks.resizeCallback = resizeCallback;
+}
+
+VkResult window_create_vulkan_surface(const VkInstance instance, VkSurfaceKHR* surface) {
+#ifdef _WIN32
+    VkWin32SurfaceCreateInfoKHR surfaceCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+        .hinstance = GetModuleHandle(nullptr),
+        .hwnd = gameWindow.hwnd
+    };
+    return vkCreateWin32SurfaceKHR(instance, &surfaceCreateInfo, nullptr, surface);
+#else
+    #error PLATFORM NOT SUPPORTED, IMPLEMENT SURFACE CREATION FOR THIS PLATFORM
+#endif
 }

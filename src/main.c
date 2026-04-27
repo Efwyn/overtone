@@ -14,20 +14,19 @@
 
 
 int main() {
-    TimeStep startTime, endTime, elapsedTime;
-    timer_init();
     //
     // Initialization
     //
-    Window window;
-    if(window_create(&window, 800 , 600, "Hello Overtone!") == ResultFailure) {
+    timer_init();
+
+    Window* window;
+    if(window_create(800 , 600, "Hello Overtone!", &window)) {
         printf("ERROR! Failed to Create Window\n");
         return EXIT_FAILURE;
     }
+    window_set_callback_resize(renderer_signal_framebuffer_resized);
 
-    window_show(&window);
-
-    if(renderer_initialize(&window) == ResultFailure) {
+    if(renderer_initialize(window) == ResultFailure) {
         printf("ERROR! Failed to Initialize Renderer\n");
         return EXIT_FAILURE;
     }
@@ -36,13 +35,17 @@ int main() {
     // Main Loop
     //
 
-    startTime = timer_get_timeval();
+    TimeStep startTime = timer_get_timeval();
     uint64_t framecount = 0;
 
     bool running = true;
     while(running) {
-        if(window_poll_events())
+        window_poll_events();
+        if(window->shouldClose == true) {
+            printf("Window closed, terminating loop\n");
             running = false;
+            break;
+        }
 
 
         //Loop Logic
@@ -54,18 +57,21 @@ int main() {
         }
         framecount++;
     }
-    endTime = timer_get_timeval();
-    elapsedTime = endTime - startTime;
+    TimeStep elapsedTime = timer_get_timeval() - startTime;
 
-    printf("Total Frames: %llu, Elapsed Time: %.2fs\n", framecount, timestep_to_s(elapsedTime));
-    printf("Avg Frame: %.2fms (%.2ffps)\n", (float) timestep_to_ms(elapsedTime) / framecount, (double)framecount / timestep_to_s(elapsedTime)); 
+    printf("Total Frames: %llu, Elapsed Time: %.2fs\n",
+            framecount,
+            timestep_to_s(elapsedTime));
+    printf("Avg Frame: %.2fms (%.2ffps)\n",
+            (float) timestep_to_ms(elapsedTime) / framecount,
+            (double)framecount / timestep_to_s(elapsedTime)); 
     renderer_wait_idle();
 
     //
     // Cleanup
     //
     renderer_shutdown();
-    window_cleanup(&window);
+    window_cleanup();
 
     return EXIT_SUCCESS;
 }

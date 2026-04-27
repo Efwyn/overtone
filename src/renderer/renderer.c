@@ -9,13 +9,11 @@
 #include "window.h"
 #include "timer.h"
 
+#include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
 
-#ifdef WIN32
-    #define VK_USE_PLATFORM_WIN32_KHR
-#endif
 #include <vulkan/vulkan.h>
 
 #ifdef NDEBUG
@@ -53,6 +51,7 @@ typedef struct BinaryFile {
 } BinaryFile;
 
 Result load_binary_file(const char* filename, BinaryFile* file); 
+Result create_swapchain();
 Result create_pipeline();
 
 // Vulkan Validation Layers, useful for debugging
@@ -82,6 +81,8 @@ typedef struct VulkanState {
     VkDevice                 device;
     u32                      graphicsQueueIndex;
     VkQueue                  graphicsQueue;
+    Window*                  window;
+    bool                     framebufferResized;
     //Swapchain
     VkSwapchainKHR           swapChain;
     VkSurfaceFormatKHR       swapChainFormat;
@@ -110,12 +111,14 @@ const VkApplicationInfo appInfo = {
     .apiVersion         = VK_API_VERSION_1_4
 };
 
-Result renderer_initialize(const Window* window) {
+Result renderer_initialize(Window* window) {
     if(enableValidationLayers) {
         printf("[Renderer]: Validation Layers are ON!\n");
     } else {
         printf("[Renderer]: Validation Layers are OFF!\n");
     }
+    v_state.window = window;
+    v_state.framebufferResized = false;
 
     //
     // Vulkan Instance
@@ -214,20 +217,10 @@ Result renderer_initialize(const Window* window) {
     // Create A Surface from the window
     //
     printf("[Renderer]: Creating Surface\n");
-
-#ifdef WIN32
-    VkWin32SurfaceCreateInfoKHR surfaceCreateInfo = {
-        .sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
-        .hinstance = GetModuleHandle(nullptr),
-        .hwnd = window->hwnd
-    };
-    if(vkCreateWin32SurfaceKHR(v_state.instance, &surfaceCreateInfo, nullptr, &v_state.surface) != VK_SUCCESS) {
+    if(window_create_vulkan_surface(v_state.instance, &v_state.surface) != VK_SUCCESS) {
         printf("ERROR: Failed to Create Surface!\n");
         return ResultFailure;
     }
-#else
-    #error PLATFORM NOT SUPPORTED, IMPLEMENT SURFACE CREATION FOR THIS PLATFORM
-#endif
 
     //
     // Determine Queue Info
@@ -318,11 +311,97 @@ Result renderer_initialize(const Window* window) {
     //
     printf("[Renderer]: Creating Swap Chain\n");
 
+    if(create_swapchain() !=  ResultOk) {
+        printf("[Renderer]: Failed to Create Swap Chain!\n");
+        return ResultFailure;
+    }
+
+    //
+    // graphicsPipeline
+    //
+    printf("Creating Pipeline\n");
+
+    if(create_pipeline() != ResultOk) {
+        printf("ERROR: Failed to create pipeline!\n");
+        return ResultFailure;
+    }
+
+    //
+    // Command Pool and buffers
+    //
+    const VkCommandPoolCreateInfo commandPoolCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = v_state.graphicsQueueIndex,
+    };
+
+    if(vkCreateCommandPool(v_state.device, &commandPoolCreateInfo, nullptr, &v_state.commandPool) != VK_SUCCESS) {
+        printf("ERROR: Failed to create command pool!\n");
+        return ResultFailure;
+    }
+
+    const VkCommandBufferAllocateInfo commandBufferAllocInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = v_state.commandPool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = FRAMES_IN_FLIGHT,
+    };
+
+    if(vkAllocateCommandBuffers(v_state.device, &commandBufferAllocInfo, v_state.commandBuffers) != VK_SUCCESS) {
+        printf("ERROR: Failed to Allocate Command Buffers!\n");
+        return ResultFailure;
+    }
+
+
+    //
+    // Synchronization Objects
+    //
+    const VkSemaphoreCreateInfo semaphoreCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+    };
+    const VkFenceCreateInfo fenceCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+    };
+
+    for(u32 i = 0; i < FRAMES_IN_FLIGHT; i++) {
+        if(vkCreateSemaphore(v_state.device, &semaphoreCreateInfo, nullptr, &v_state.acquireSemaphores[i]) != VK_SUCCESS) {
+            printf("ERROR: Failed to create Semaphore!\n");
+            return ResultFailure;
+        }
+        if(vkCreateFence(v_state.device, &fenceCreateInfo, nullptr, &v_state.frameFences[i]) != VK_SUCCESS) {
+            printf("ERROR: Failed to create fence!\n");
+            return ResultFailure;
+        }
+    }
+
+
+    // Submission semapphores are instead based on swapchain length
+    v_state.submitSemaphores = calloc(v_state.swapChainLength, sizeof(VkSemaphore));
+    for(u32 i = 0; i < v_state.swapChainLength; i++) {
+        if(vkCreateSemaphore(v_state.device, &semaphoreCreateInfo, nullptr, &v_state.submitSemaphores[i]) != VK_SUCCESS) {
+            printf("ERROR: Failed to create Semaphore!\n");
+            return ResultFailure;
+        }
+    }
+
+    printf("Renderer Initialization Complete\n");
+
+    //clean up our dynamic memory
+    free(queueFamilyProps);
+    free(instanceExtensions);
+    free(physicalDeviceList);
+
+    return ResultOk;
+}
+
+Result create_swapchain() {
     VkSurfaceCapabilitiesKHR surfaceCapabilities;
     u32 availableFormatsCount = 0;
     VkSurfaceFormatKHR* availableSurfaceFormats;
     u32 availablePresentModesCount = 0;
     VkPresentModeKHR* availablePresentModes;
+
     if(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(v_state.physicalDevice, v_state.surface, &surfaceCapabilities) != VK_SUCCESS) {
         printf("ERROR: Failed to Get Surface Capabilites!\n");
         return ResultFailure;
@@ -362,8 +441,8 @@ Result renderer_initialize(const Window* window) {
 
     //Pick a Present Mode, preferred is Mailbox, but we'll use fifo if we can't find it
     //VK_PRESENT_MODE_IMMEDIATE_KHR is Vsync off
-    const VkPresentModeKHR preferredPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
-    //const VkPresentModeKHR preferredPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+    //const VkPresentModeKHR preferredPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    const VkPresentModeKHR preferredPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
     VkPresentModeKHR chosenPresentMode = VK_PRESENT_MODE_FIFO_KHR;
     for(u32 i = 0; i < availablePresentModesCount; ++i) {
         if(availablePresentModes[i] == preferredPresentMode) {
@@ -380,8 +459,10 @@ Result renderer_initialize(const Window* window) {
         swapChainExtent = surfaceCapabilities.currentExtent;
     }
     else {
-        swapChainExtent.width = clamp_u32(window->width, surfaceCapabilities.minImageExtent.width, surfaceCapabilities.maxImageExtent.width);
-        swapChainExtent.height = clamp_u32(window->height, surfaceCapabilities.minImageExtent.height, surfaceCapabilities.maxImageExtent.height);
+        u32 width, height;
+        window_get_framebuffer_size(&width, &height);
+        swapChainExtent.width = clamp_u32(width, surfaceCapabilities.minImageExtent.width, surfaceCapabilities.maxImageExtent.width);
+        swapChainExtent.height = clamp_u32(height, surfaceCapabilities.minImageExtent.height, surfaceCapabilities.maxImageExtent.height);
     }
 
     // Set the number of images we will have in the swapchain
@@ -464,85 +545,26 @@ Result renderer_initialize(const Window* window) {
         }
     }
 
-    //
-    // graphicsPipeline
-    //
-    printf("Creating Pipeline\n");
-
-    if(create_pipeline() != ResultOk) {
-        printf("ERROR: Failed to create pipeline!\n");
-        return ResultFailure;
-    }
-
-    //
-    // Command Pool and buffers
-    //
-    const VkCommandPoolCreateInfo commandPoolCreateInfo = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-        .queueFamilyIndex = v_state.graphicsQueueIndex,
-    };
-
-    if(vkCreateCommandPool(v_state.device, &commandPoolCreateInfo, nullptr, &v_state.commandPool) != VK_SUCCESS) {
-        printf("ERROR: Failed to create command pool!\n");
-        return ResultFailure;
-    }
-
-    const VkCommandBufferAllocateInfo commandBufferAllocInfo = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool = v_state.commandPool,
-        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = FRAMES_IN_FLIGHT,
-    };
-
-    if(vkAllocateCommandBuffers(v_state.device, &commandBufferAllocInfo, v_state.commandBuffers) != VK_SUCCESS) {
-        printf("ERROR: Failed to Allocate Command Buffers!\n");
-        return ResultFailure;
-    }
-
-
-    //
-    // Synchronization Objects
-    //
-    const VkSemaphoreCreateInfo semaphoreCreateInfo = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-    };
-    const VkFenceCreateInfo fenceCreateInfo = {
-        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-        .flags = VK_FENCE_CREATE_SIGNALED_BIT,
-    };
-
-    for(u32 i = 0; i < FRAMES_IN_FLIGHT; i++) {
-        if(vkCreateSemaphore(v_state.device, &semaphoreCreateInfo, nullptr, &v_state.acquireSemaphores[i]) != VK_SUCCESS) {
-            printf("ERROR: Failed to create Semaphore!\n");
-            return ResultFailure;
-        }
-        if(vkCreateFence(v_state.device, &fenceCreateInfo, nullptr, &v_state.frameFences[i]) != VK_SUCCESS) {
-            printf("ERROR: Failed to create fence!\n");
-            return ResultFailure;
-        }
-    }
-
-
-    // Submission semapphores are instead based on swapchain length
-    v_state.submitSemaphores = calloc(v_state.swapChainLength, sizeof(VkSemaphore));
-    for(u32 i = 0; i < v_state.swapChainLength; i++) {
-        if(vkCreateSemaphore(v_state.device, &semaphoreCreateInfo, nullptr, &v_state.submitSemaphores[i]) != VK_SUCCESS) {
-            printf("ERROR: Failed to create Semaphore!\n");
-            return ResultFailure;
-        }
-    }
-
-    printf("Renderer Initialization Complete\n");
-
-    //clean up our dynamic memory
     free(availableSurfaceFormats);
     free(availablePresentModes);
-    free(queueFamilyProps);
-    free(instanceExtensions);
-    free(physicalDeviceList);
+    return ResultOk; 
+}
 
-    return ResultOk;
+void cleanup_swapchain() {
+    for(u32 i = 0; i < v_state.swapChainLength; i++) {
+        vkDestroyImageView(v_state.device, v_state.swapChainImageViews[i], nullptr);
+    }
+    free(v_state.swapChainImageViews);
+    free(v_state.swapChainImages);
+
+    vkDestroySwapchainKHR(v_state.device, v_state.swapChain, nullptr); 
+}
+
+Result recreate_swapchain() {
+    renderer_wait_idle();
+    cleanup_swapchain();
+
+    return create_swapchain();
 }
 
 void renderer_shutdown() {
@@ -552,24 +574,19 @@ void renderer_shutdown() {
         vkDestroyFence(v_state.device, v_state.frameFences[i], nullptr);
         vkDestroySemaphore(v_state.device, v_state.acquireSemaphores[i], nullptr);
     }
-    vkFreeCommandBuffers(v_state.device, v_state.commandPool, FRAMES_IN_FLIGHT, v_state.commandBuffers);
 
     for(u32 i = 0; i < v_state.swapChainLength; i++) {
         vkDestroySemaphore(v_state.device, v_state.submitSemaphores[i], nullptr);
     }
     free(v_state.submitSemaphores);
 
+    vkFreeCommandBuffers(v_state.device, v_state.commandPool, FRAMES_IN_FLIGHT, v_state.commandBuffers);
     vkDestroyCommandPool(v_state.device, v_state.commandPool, nullptr);
 
     vkDestroyPipeline(v_state.device, v_state.graphicsPipeline, nullptr);
 
-    for(u32 i = 0; i < v_state.swapChainLength; i++) {
-        vkDestroyImageView(v_state.device, v_state.swapChainImageViews[i], nullptr);
-    }
-    free(v_state.swapChainImageViews);
-    free(v_state.swapChainImages);
+    cleanup_swapchain();
 
-    vkDestroySwapchainKHR(v_state.device, v_state.swapChain, nullptr); 
     vkDestroyDevice(v_state.device, nullptr);
     vkDestroySurfaceKHR(v_state.instance, v_state.surface, nullptr);
 
@@ -695,7 +712,7 @@ Result record_command_buffer(VkCommandBuffer commandBuffer, const u32 imageIndex
 
 Result renderer_draw_frame() {
     TIMESTEP(frameStartTime);
-    //TimeStep frameStartTime = timer_get_timeval();
+
     //
     // Wait on fence
     //
@@ -704,18 +721,23 @@ Result renderer_draw_frame() {
         printf("ERROR: Failed to wait for the fence\n");
         return ResultFailure;
     }
+
     vkResetFences(v_state.device, 1, &frameFence);
 
     u32 imageIndex = 0;
     VkSemaphore acquireSemaphore = v_state.acquireSemaphores[frameIndex];
-    if(vkAcquireNextImageKHR(v_state.device, v_state.swapChain, UINT64_MAX, acquireSemaphore, nullptr, &imageIndex) != VK_SUCCESS) {
+    VkResult acquireResult = vkAcquireNextImageKHR(v_state.device, v_state.swapChain, UINT64_MAX, acquireSemaphore, nullptr, &imageIndex);
+    if(acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+        recreate_swapchain();
+        return ResultOk;
+    }
+    else if(acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+        assert(acquireResult == VK_TIMEOUT || acquireResult == VK_NOT_READY);
         printf("ERROR: Failed to retrieve next image!\n");
         return ResultFailure;
     }
     //index submit semaphore by image index rather than in-flight index
     VkSemaphore submitSemaphore = v_state.submitSemaphores[imageIndex];
-
-
 
     TIMESTEP(recordStartTime);
     //
@@ -758,7 +780,12 @@ Result renderer_draw_frame() {
         .pResults = nullptr
     };
 
-    if(vkQueuePresentKHR(v_state.graphicsQueue, &presentInfo) != VK_SUCCESS) {
+    VkResult presentResult = vkQueuePresentKHR(v_state.graphicsQueue, &presentInfo);
+    if(presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR || v_state.framebufferResized) {
+        v_state.framebufferResized = false;
+        recreate_swapchain();
+    }
+    else if(presentResult != VK_SUCCESS) {
         printf("ERROR: Failed to present image!\n");
         return ResultFailure;
     }
@@ -996,4 +1023,8 @@ Result create_pipeline() {
     vkDestroyShaderModule(v_state.device, shaderModule, nullptr);
     free(shaderFile.data);
     return ResultOk;
+}
+
+void renderer_signal_framebuffer_resized(u32, u32) {
+    v_state.framebufferResized = true;
 }
