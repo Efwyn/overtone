@@ -1,6 +1,6 @@
 // ========================================
 // File: include/types.h
-// Description: Commonly Used Generic Types
+// Description: Commonly Used Standard Types
 // Author: Nicholas Carpenetti
 // Created On: 19-04-2026
 // ========================================
@@ -8,6 +8,10 @@
 #include <stdint.h>
 
 typedef uint32_t u32;
+typedef uint64_t u64;
+
+typedef float    f32;
+typedef double   f64;
 
 inline u32 min_u32 (u32 a, u32 b) {
     return a < b ? a : b;

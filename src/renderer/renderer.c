@@ -8,6 +8,7 @@
 #include "types.h"
 #include "window.h"
 #include "timer.h"
+#include "math/vec_types.h"
 
 #include <assert.h>
 #include <stdint.h>
@@ -15,6 +16,7 @@
 #include <stdio.h>
 
 #include <vulkan/vulkan.h>
+#include <winscard.h>
 
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
@@ -45,6 +47,18 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         VkDebugUtilsMessageTypeFlagsEXT        type,
         const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData, void*);
 
+typedef struct TriangleVertex { 
+    Vec2 pos;
+    Vec3 color;
+} TriangleVertex;
+
+#define NUM_VERTICES 3
+TriangleVertex triangleVertices[NUM_VERTICES] = {
+    {{0.0f, -0.5f}, {1.0f, 1.0f, 1.0f}},
+    {{0.5f, 0.5f},  {0.0f, 1.0f, 0.0f}},
+    {{-0.5, 0.5f},  {0.0f, 0.0f, 1.0f}},
+};
+
 typedef struct BinaryFile {
     char* data;
     size_t size;
@@ -53,6 +67,7 @@ typedef struct BinaryFile {
 Result load_binary_file(const char* filename, BinaryFile* file); 
 Result create_swapchain();
 Result create_pipeline();
+Result create_vertex_buffer();
 
 // Vulkan Validation Layers, useful for debugging
 #define VALIDATION_LAYER_COUNT 1
@@ -89,6 +104,9 @@ typedef struct VulkanState {
     u32                      swapChainLength;
     VkImage*                 swapChainImages;
     VkImageView*             swapChainImageViews;
+    //VertexBuffer
+    VkBuffer                 vertexBuffer;
+    VkDeviceMemory           vertexBufferMemory;
     //Pipeline
     VkPipelineLayout         pipelineLayout;
     VkPipeline               graphicsPipeline;
@@ -338,6 +356,12 @@ Result renderer_initialize() {
         return ResultFailure;
     }
 
+ 
+    if(create_vertex_buffer() != ResultOk) {
+        printf("Failed to create vertex buffer!\n");
+        return ResultFailure;
+    }
+
     const VkCommandBufferAllocateInfo commandBufferAllocInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = v_state.commandPool,
@@ -579,6 +603,12 @@ void renderer_shutdown() {
     free(v_state.submitSemaphores);
 
     vkFreeCommandBuffers(v_state.device, v_state.commandPool, FRAMES_IN_FLIGHT, v_state.commandBuffers);
+
+    vkDestroyBuffer(v_state.device, v_state.vertexBuffer, nullptr);
+    vkFreeMemory(v_state.device, v_state.vertexBufferMemory, nullptr);
+
+
+
     vkDestroyCommandPool(v_state.device, v_state.commandPool, nullptr);
 
     vkDestroyPipeline(v_state.device, v_state.graphicsPipeline, nullptr);
@@ -687,7 +717,11 @@ Result record_command_buffer(VkCommandBuffer commandBuffer, const u32 imageIndex
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer, 0, 1, &renderArea);
 
-    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    VkBuffer vertexBuffers[] = {v_state.vertexBuffer};
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+
+    vkCmdDraw(commandBuffer, NUM_VERTICES, 1, 0, 0);
 
     vkCmdEndRendering(commandBuffer);
 
@@ -876,6 +910,7 @@ Result create_shader_module(BinaryFile shaderFile, VkShaderModule* shaderModule)
     return ResultOk;
 }
 
+
 Result create_pipeline() {
     BinaryFile shaderFile = {};
     if(load_binary_file
@@ -911,8 +946,37 @@ Result create_pipeline() {
     //Vertex input. The format of the vertex data passed to the vertex shader.
     //In this first example(triangle, the vertex info is in the shader
     //itself
+
+    // bindingDescription and attributeDescriptions will be broken out later to suitable
+    // the needs of each pipeline. Here we are describing how a
+    // { Vec2 pos, Vec3 color } vertex enters the pipeline
+    VkVertexInputBindingDescription bindingDescription = {
+        .binding = 0,
+        .stride = sizeof(TriangleVertex),
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+
+    VkVertexInputAttributeDescription attributeDescriptions[2] = {
+        {
+            .location = 0,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32_SFLOAT,
+            .offset = offsetof(TriangleVertex, pos)
+        },
+        {
+            .location = 1,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset = offsetof(TriangleVertex, color)
+        }
+    };
+
     VkPipelineVertexInputStateCreateInfo vertexInputStateCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &bindingDescription,
+        .vertexAttributeDescriptionCount = 2,
+        .pVertexAttributeDescriptions = attributeDescriptions,
     };
     VkPipelineInputAssemblyStateCreateInfo inputAssemblyStateCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -1020,6 +1084,59 @@ Result create_pipeline() {
     vkDestroyPipelineLayout(v_state.device, pipelineLayout, nullptr);
     vkDestroyShaderModule(v_state.device, shaderModule, nullptr);
     free(shaderFile.data);
+    return ResultOk;
+}
+
+// returns index on success, UINT32_MAX on failure
+u32 query_memory_type(u32 typeFilter, VkMemoryPropertyFlags desiredProperties) {
+    VkPhysicalDeviceMemoryProperties memoryProperties;
+    vkGetPhysicalDeviceMemoryProperties(v_state.physicalDevice, &memoryProperties);
+    for(u32 i = 0; i < memoryProperties.memoryTypeCount; i++) {
+        if(typeFilter & (1 << i) &&
+          (memoryProperties.memoryTypes[i].propertyFlags & desiredProperties) == desiredProperties) {
+            return i;
+        }
+    }
+    return UINT32_MAX;
+}
+
+Result create_vertex_buffer() {
+    VkBufferCreateInfo bufferInfo = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = sizeof(triangleVertices[0]) * NUM_VERTICES,
+        .usage  = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    if(vkCreateBuffer(v_state.device, &bufferInfo, nullptr, &v_state.vertexBuffer) != VK_SUCCESS) {
+        printf("Failed to create vertex buffer!\n");
+        return ResultFailure;
+    }
+
+
+    VkMemoryRequirements memoryRequirements;
+    vkGetBufferMemoryRequirements(v_state.device, v_state.vertexBuffer, &memoryRequirements);
+    VkMemoryAllocateInfo allocateInfo = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = memoryRequirements.size,
+        .memoryTypeIndex = query_memory_type(memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+    };
+
+    if(vkAllocateMemory(v_state.device, &allocateInfo, nullptr, &v_state.vertexBufferMemory) != VK_SUCCESS) {
+        return ResultFailure;
+    }
+    vkBindBufferMemory(v_state.device, v_state.vertexBuffer, v_state.vertexBufferMemory, 0);
+
+
+
+    //
+    // Copy the data in
+    //
+    void* data;
+    //first allocate the memory in vulkan and set data to point to it
+    vkMapMemory(v_state.device, v_state.vertexBufferMemory, 0, bufferInfo.size, 0, &data);
+    memcpy(data, triangleVertices, bufferInfo.size);
+    vkUnmapMemory(v_state.device, v_state.vertexBufferMemory);
+
     return ResultOk;
 }
 
