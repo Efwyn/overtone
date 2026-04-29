@@ -47,16 +47,22 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         VkDebugUtilsMessageTypeFlagsEXT        type,
         const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData, void*);
 
-typedef struct TriangleVertex { 
+typedef struct Vertex { 
     Vec2 pos;
     Vec3 color;
-} TriangleVertex;
+} Vertex;
 
-#define NUM_VERTICES 3
-TriangleVertex triangleVertices[NUM_VERTICES] = {
-    {{0.0f, -0.5f}, {1.0f, 1.0f, 1.0f}},
-    {{0.5f, 0.5f},  {0.0f, 1.0f, 0.0f}},
-    {{-0.5, 0.5f},  {0.0f, 0.0f, 1.0f}},
+#define NUM_VERTICES 4
+#define NUM_INDICES 6
+const Vertex meshVertices[NUM_VERTICES] = {
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{ 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{ 0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}},
+    {{-0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}},
+};
+#define NUM_INDICES 6
+const u16 meshIndices[NUM_INDICES] = {
+    0, 1, 2, 2, 3, 0,
 };
 
 typedef struct BinaryFile {
@@ -67,7 +73,14 @@ typedef struct BinaryFile {
 Result load_binary_file(const char* filename, BinaryFile* file); 
 Result create_swapchain();
 Result create_pipeline();
-Result create_vertex_buffer();
+Result create_vertex_buffer(VkBuffer* vertexBuffer, VkDeviceMemory* vertexBufferMemory);
+Result create_index_buffer(VkBuffer* indexBuffer, VkDeviceMemory* indexBufferMemory);
+Result create_buffer(VkDeviceSize size,
+                   VkBufferUsageFlags usage,
+                   VkMemoryPropertyFlags memoryProperties,
+                   VkBuffer* buffer,
+                   VkDeviceMemory* bufferMemory);
+Result copy_buffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
 
 // Vulkan Validation Layers, useful for debugging
 #define VALIDATION_LAYER_COUNT 1
@@ -107,6 +120,8 @@ typedef struct VulkanState {
     //VertexBuffer
     VkBuffer                 vertexBuffer;
     VkDeviceMemory           vertexBufferMemory;
+    VkBuffer                 indexBuffer;
+    VkDeviceMemory           indexBufferMemory;
     //Pipeline
     VkPipelineLayout         pipelineLayout;
     VkPipeline               graphicsPipeline;
@@ -357,8 +372,12 @@ Result renderer_initialize() {
     }
 
  
-    if(create_vertex_buffer() != ResultOk) {
+    if(create_vertex_buffer(&v_state.vertexBuffer, &v_state.vertexBufferMemory) != ResultOk) {
         printf("Failed to create vertex buffer!\n");
+        return ResultFailure;
+    }
+    if(create_index_buffer(&v_state.indexBuffer, &v_state.indexBufferMemory) != ResultOk) {
+        printf("Failed to create index buffer!\n");
         return ResultFailure;
     }
 
@@ -607,6 +626,8 @@ void renderer_shutdown() {
     vkDestroyBuffer(v_state.device, v_state.vertexBuffer, nullptr);
     vkFreeMemory(v_state.device, v_state.vertexBufferMemory, nullptr);
 
+    vkDestroyBuffer(v_state.device, v_state.indexBuffer, nullptr);
+    vkFreeMemory(v_state.device, v_state.indexBufferMemory, nullptr);
 
 
     vkDestroyCommandPool(v_state.device, v_state.commandPool, nullptr);
@@ -721,7 +742,10 @@ Result record_command_buffer(VkCommandBuffer commandBuffer, const u32 imageIndex
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
 
-    vkCmdDraw(commandBuffer, NUM_VERTICES, 1, 0, 0);
+    vkCmdBindIndexBuffer(commandBuffer, v_state.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+
+    //vkCmdDraw(commandBuffer, NUM_VERTICES, 1, 0, 0);
+    vkCmdDrawIndexed(commandBuffer, NUM_INDICES, 1, 0, 0, 0);
 
     vkCmdEndRendering(commandBuffer);
 
@@ -952,7 +976,7 @@ Result create_pipeline() {
     // { Vec2 pos, Vec3 color } vertex enters the pipeline
     VkVertexInputBindingDescription bindingDescription = {
         .binding = 0,
-        .stride = sizeof(TriangleVertex),
+        .stride = sizeof(Vertex),
         .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
     };
 
@@ -961,13 +985,13 @@ Result create_pipeline() {
             .location = 0,
             .binding = 0,
             .format = VK_FORMAT_R32G32_SFLOAT,
-            .offset = offsetof(TriangleVertex, pos)
+            .offset = offsetof(Vertex, pos)
         },
         {
             .location = 1,
             .binding = 0,
             .format = VK_FORMAT_R32G32B32_SFLOAT,
-            .offset = offsetof(TriangleVertex, color)
+            .offset = offsetof(Vertex, color)
         }
     };
 
@@ -1100,42 +1124,166 @@ u32 query_memory_type(u32 typeFilter, VkMemoryPropertyFlags desiredProperties) {
     return UINT32_MAX;
 }
 
-Result create_vertex_buffer() {
+Result create_buffer(VkDeviceSize size,
+                   VkBufferUsageFlags usage,
+                   VkMemoryPropertyFlags memoryProperties,
+                   VkBuffer* buffer,
+                   VkDeviceMemory* bufferMemory) {
     VkBufferCreateInfo bufferInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = sizeof(triangleVertices[0]) * NUM_VERTICES,
-        .usage  = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        .size  = size,
+        .usage = usage,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
-    if(vkCreateBuffer(v_state.device, &bufferInfo, nullptr, &v_state.vertexBuffer) != VK_SUCCESS) {
-        printf("Failed to create vertex buffer!\n");
+
+    if(vkCreateBuffer(v_state.device, &bufferInfo, nullptr, buffer) != VK_SUCCESS) {
+        printf("Failed to create buffer!\n");
         return ResultFailure;
     }
 
-
     VkMemoryRequirements memoryRequirements;
-    vkGetBufferMemoryRequirements(v_state.device, v_state.vertexBuffer, &memoryRequirements);
+    vkGetBufferMemoryRequirements(v_state.device, *buffer, &memoryRequirements);
+
     VkMemoryAllocateInfo allocateInfo = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = memoryRequirements.size,
-        .memoryTypeIndex = query_memory_type(memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+        .memoryTypeIndex = query_memory_type(memoryRequirements.memoryTypeBits, memoryProperties),
     };
 
-    if(vkAllocateMemory(v_state.device, &allocateInfo, nullptr, &v_state.vertexBufferMemory) != VK_SUCCESS) {
+    if(vkAllocateMemory(v_state.device, &allocateInfo, nullptr, bufferMemory) != VK_SUCCESS) {
+        printf("Failed to allocate buffer memory\n");
         return ResultFailure;
     }
-    vkBindBufferMemory(v_state.device, v_state.vertexBuffer, v_state.vertexBufferMemory, 0);
+    if(vkBindBufferMemory(v_state.device, *buffer, *bufferMemory, 0) != VK_SUCCESS) {
+        printf("Failed to bind buffer memory\n");
+        return ResultFailure;
+    }
 
+    return ResultOk;
+}
 
+// Copy data from one VkBuffer to another
+// notes: maybe can do en masse?
+// consider keeping the copy buffer around longer than just this function
+Result copy_buffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
+    VkCommandBufferAllocateInfo allocateInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = v_state.commandPool,
+        .level       = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
 
-    //
-    // Copy the data in
-    //
-    void* data;
+    VkCommandBuffer commandCopyBuffer;
+    if(vkAllocateCommandBuffers(v_state.device, &allocateInfo, &commandCopyBuffer) != VK_SUCCESS) {
+        printf("Failed to create copy commnd buffer\n");
+        return ResultFailure;
+    }
+
+    VkCommandBufferBeginInfo copyBeginInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    vkBeginCommandBuffer(commandCopyBuffer, &copyBeginInfo);
+
+    VkBufferCopy copyRegion = {
+        .srcOffset = 0,
+        .dstOffset = 0,
+        .size      = size,
+    };
+
+    vkCmdCopyBuffer(commandCopyBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+
+    vkEndCommandBuffer(commandCopyBuffer);
+
+    VkSubmitInfo submitInfo = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &commandCopyBuffer,
+    };
+
+    // potentially use fences to submit many copies simultaneously
+    vkQueueSubmit(v_state.graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(v_state.graphicsQueue);
+
+    vkFreeCommandBuffers(v_state.device, v_state.commandPool, 1, &commandCopyBuffer);
+
+    return ResultOk;
+}
+
+Result create_vertex_buffer(VkBuffer* vertexBuffer, VkDeviceMemory* vertexBufferMemory) {
+    VkDeviceSize bufferSize = sizeof(meshVertices[0]) * NUM_VERTICES;
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory stagingBufferMemory = VK_NULL_HANDLE;
+    void* stagingData = nullptr;
+
+    //First create a staging buffer
+    if(create_buffer(bufferSize,
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                    &stagingBuffer,
+                    &stagingBufferMemory) != ResultOk) {
+        printf("Failed to create staging Buffer\n");
+        return ResultFailure;
+    }
+
     //first allocate the memory in vulkan and set data to point to it
-    vkMapMemory(v_state.device, v_state.vertexBufferMemory, 0, bufferInfo.size, 0, &data);
-    memcpy(data, triangleVertices, bufferInfo.size);
-    vkUnmapMemory(v_state.device, v_state.vertexBufferMemory);
+    vkMapMemory(v_state.device, stagingBufferMemory, 0, bufferSize, 0, &stagingData);
+    memcpy(stagingData, meshVertices, bufferSize);
+    vkUnmapMemory(v_state.device, stagingBufferMemory);
+
+    if(create_buffer(bufferSize,
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                    vertexBuffer,
+                    vertexBufferMemory) != ResultOk) {
+        printf("Failed to create Vertex Buffer!\n");
+        return ResultFailure;
+    }
+
+    //copy the data from the staging buffer to the GPU-local buffer
+    copy_buffer(stagingBuffer, *vertexBuffer, bufferSize);
+
+    vkDestroyBuffer(v_state.device, stagingBuffer, nullptr);
+    vkFreeMemory(v_state.device, stagingBufferMemory, nullptr);
+
+    return ResultOk;
+}
+
+Result create_index_buffer(VkBuffer* indexBuffer, VkDeviceMemory* indexBufferMemory) {
+    VkDeviceSize bufferSize = sizeof(meshIndices[0]) * NUM_INDICES;
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory stagingBufferMemory = VK_NULL_HANDLE;
+    void* stagingData = nullptr;
+
+    //First create a staging buffer
+    if(create_buffer(bufferSize,
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                    &stagingBuffer,
+                    &stagingBufferMemory) != ResultOk) {
+        printf("Failed to create staging Buffer\n");
+        return ResultFailure;
+    }
+
+    //first allocate the memory in vulkan and set data to point to it
+    vkMapMemory(v_state.device, stagingBufferMemory, 0, bufferSize, 0, &stagingData);
+    memcpy(stagingData, meshIndices, bufferSize);
+    vkUnmapMemory(v_state.device, stagingBufferMemory);
+
+    if(create_buffer(bufferSize,
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                    indexBuffer,
+                    indexBufferMemory) != ResultOk) {
+        printf("Failed to create Vertex Buffer!\n");
+        return ResultFailure;
+    }
+
+    //copy the data from the staging buffer to the GPU-local buffer
+    copy_buffer(stagingBuffer, *indexBuffer, bufferSize);
+
+    vkDestroyBuffer(v_state.device, stagingBuffer, nullptr);
+    vkFreeMemory(v_state.device, stagingBufferMemory, nullptr);
 
     return ResultOk;
 }
