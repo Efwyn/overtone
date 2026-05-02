@@ -843,17 +843,16 @@ Result update_uniform_buffers(f32 deltaTime, u32 frameIndex) {
     UBO ubo = {};
     Vec3 rotationAxis   = { 0.0f, 0.0f, 1.0f };
 
-    Vec3 cameraPosition = { 2.0f, 2.0f, 2.0f };
+    Vec3 cameraPosition = { 2.0f, 2.0f, 4.0f };
     Vec3 cameraTarget   = { 0.0f, 0.0f, 0.0f };
     Vec3 cameraUp       = { 0.0f, 0.0f, 1.0f };
 
     f32  aspectRatio = (f32)v_state.swapChainExtent.width / (f32)v_state.swapChainExtent.height;
 
     ubo.model = Mat4_rotate(Mat4_Identity, deltaTime * DEG_TO_RAD(90.0f), rotationAxis);
-    ubo.view  = Mat4_lookAt(cameraPosition, cameraTarget, cameraUp); 
+    ubo.view  = Mat4_lookAt(cameraPosition, cameraTarget, cameraUp);
     ubo.projection = Mat4_perspective(DEG_TO_RAD(45.0f), aspectRatio, 0.1f, 10.0f);
 
-    ubo.projection.m22 *= -1;
     memcpy(v_state.uniformBuffersMapped[frameIndex], &ubo, sizeof(ubo));
     return ResultOk;
 }

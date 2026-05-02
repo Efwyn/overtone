@@ -84,15 +84,15 @@ inline Mat4 Mat4_rotate(Mat4 M, f32 angle, Vec3 axis) {
 
     Mat4 R = {
         .m11 = c + tmp.x * A.x,         //c + (1 - c) * Ax^2
-        .m12 = tmp.x * A.y - s * A.z,   //(1 - c)AxAy - sAz
-        .m13 = tmp.x * A.z - s * A.y,   //(1 - c)AxAz + sAy
+        .m21 = tmp.x * A.y - s * A.z,   //(1 - c)AxAy - sAz
+        .m31 = tmp.x * A.z - s * A.y,   //(1 - c)AxAz + sAy
         //
-        .m21 = tmp.x * A.y + s * A.z,   //(1 - c)AxAy + sAz
+        .m12 = tmp.x * A.y + s * A.z,   //(1 - c)AxAy + sAz
         .m22 = c + tmp.y * A.y,         //c + (1 - c)Ay^2
-        .m23 = tmp.y * A.z - s * A.x,   //(1 - c)AyAz - sAx
+        .m32 = tmp.y * A.z - s * A.x,   //(1 - c)AyAz - sAx
         //
-        .m31 = tmp.x * A.z - s * A.y,   //(1 - c)AxAz - sAy
-        .m32 = tmp.y * A.z + s * A.x,   //(1 - c)AyAz + sAx
+        .m13 = tmp.x * A.z - s * A.y,   //(1 - c)AxAz - sAy
+        .m23 = tmp.y * A.z + s * A.x,   //(1 - c)AyAz + sAx
         .m33 = c + tmp.z * A.z,         //c + (1 - c)Az^2
         //
         .m44 = 1.0f,
@@ -117,10 +117,10 @@ inline Mat4 Mat4_lookAt(Vec3 eye, Vec3 center, Vec3 up) {
     Vec3 u = Vec3_cross(s, f);
 
     Mat4 M = {
-         s.x,  u.x,  -f.x, 0.0f,
-         s.y,  u.y,  -f.y, 0.0f,
-         s.z,  u.z,  -f.z, 0.0f,
-         Vec3_dot(s, eye), Vec3_dot(u, eye), Vec3_dot(f, eye), 1.0f,
+          s.x,   s.y,   s.z,  Vec3_dot(s, eye),
+          u.x,   u.y,   u.z,  Vec3_dot(u, eye),
+         -f.x,  -f.y,  -f.z,  Vec3_dot(f, eye),
+          0.0f,  0.0f,  0.0f, 1.0f,
     };
     return M;
 }
@@ -128,15 +128,26 @@ inline Mat4 Mat4_lookAt(Vec3 eye, Vec3 center, Vec3 up) {
 
 // Perspective projection transform
 // Figure 4.75, Real-time Rendering, 4th Edition
-inline Mat4 Mat4_perspective(f32 fov, f32 aspectRatio, f32 nearPlane, f32 farPlane) {
+inline Mat4 Mat4_perspective(f32 fov, f32 ar, f32 n, f32 f) {
    f32 c = 1.0f / tan(fov / 2.0f);
-   f32 depthSum = nearPlane + farPlane;
-   f32 depthDiff = farPlane - nearPlane;
+   f32 dSum = n + f;
+   f32 dDiff = f - n;
    Mat4 P = {
-     c / aspectRatio,          0.0f,       0.0f,             0.0f,
-            0.0f,              c,          0.0f,             0.0f,
-            0.0f,              0.0f,     (-1.0f * (depthSum / depthDiff)), -1.0f, 
-            0.0f,              0.0f,      (-1.0f * ((2.0f * (farPlane * nearPlane)) / (depthDiff))),             0.0f,
+           c / ar,             0.0f,        0.0f,             0.0f,
+            0.0f,              -c,          0.0f,             0.0f,
+            0.0f,              0.0f,  (-dSum / dDiff), (-2.0f * f * n) / (dDiff),
+            0.0f,              0.0f,       -1.0f,             0.0f,
    };
     return P;
+}
+
+
+inline Mat4 Mat4_transpose(Mat4 M) {
+    Mat4 T = {
+        M.m11, M.m21, M.m31, M.m41,
+        M.m12, M.m22, M.m31, M.m42,
+        M.m13, M.m23, M.m33, M.m43,
+        M.m14, M.m24, M.m34, M.m44,
+    };
+    return T;
 }
