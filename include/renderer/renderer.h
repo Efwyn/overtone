@@ -10,7 +10,7 @@
 
 Result renderer_initialize();
 void   renderer_shutdown();
-Result renderer_draw_frame();
+Result renderer_draw_frame(f32 deltaTime);
 
 // Wait for queued frames to finish processing
 void   renderer_wait_idle();

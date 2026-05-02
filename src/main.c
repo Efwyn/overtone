@@ -37,6 +37,7 @@ int main() {
     TimeStep startTime = timer_get_timeval();
     uint64_t framecount = 0;
 
+    TimeStep elapsedTime = startTime;
     bool running = true;
     while(running) {
         window_poll_events();
@@ -50,13 +51,13 @@ int main() {
         //Loop Logic
 
         //Draw Frame
-        if(renderer_draw_frame() != ResultOk) {
+        if(renderer_draw_frame(timestep_to_s(elapsedTime)) != ResultOk) {
             printf("ERROR: Failed to draw frame\n");
             running = false;
         }
+        elapsedTime = timer_get_timeval() - startTime;
         framecount++;
     }
-    TimeStep elapsedTime = timer_get_timeval() - startTime;
 
     printf("Total Frames: %llu, Elapsed Time: %.2fs\n",
             framecount,

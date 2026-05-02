@@ -1,4 +1,4 @@
-// ========================================
+// ==;===================================
 // File: renderer/renderer.c
 // Description: The Core Renderer Source File 
 // Author: Morgan Carpenetti
@@ -9,14 +9,19 @@
 #include "window.h"
 #include "timer.h"
 #include "math/vec_types.h"
+#include "math/matrix.h"
 
 #include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <math.h>
 
 #include <vulkan/vulkan.h>
 #include <winscard.h>
+
+#define PI 3.1415926535f
+#define DEG_TO_RAD(angle) ((angle) * (PI / 180.0f))
 
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
@@ -52,6 +57,12 @@ typedef struct Vertex {
     Vec3 color;
 } Vertex;
 
+typedef struct UBO {
+    Mat4 model;
+    Mat4 view;
+    Mat4 projection;
+} UBO;
+
 #define NUM_VERTICES 4
 #define NUM_INDICES 6
 const Vertex meshVertices[NUM_VERTICES] = {
@@ -75,12 +86,15 @@ Result create_swapchain();
 Result create_pipeline();
 Result create_vertex_buffer(VkBuffer* vertexBuffer, VkDeviceMemory* vertexBufferMemory);
 Result create_index_buffer(VkBuffer* indexBuffer, VkDeviceMemory* indexBufferMemory);
+Result create_uniform_buffers();
 Result create_buffer(VkDeviceSize size,
                    VkBufferUsageFlags usage,
                    VkMemoryPropertyFlags memoryProperties,
                    VkBuffer* buffer,
                    VkDeviceMemory* bufferMemory);
 Result copy_buffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
+Result create_descriptor_pool(u32 descriptorCount);
+Result create_descriptor_sets(u32 descriptorCount);
 
 // Vulkan Validation Layers, useful for debugging
 #define VALIDATION_LAYER_COUNT 1
@@ -117,11 +131,18 @@ typedef struct VulkanState {
     u32                      swapChainLength;
     VkImage*                 swapChainImages;
     VkImageView*             swapChainImageViews;
-    //VertexBuffer
+    //Buffers
     VkBuffer                 vertexBuffer;
     VkDeviceMemory           vertexBufferMemory;
     VkBuffer                 indexBuffer;
     VkDeviceMemory           indexBufferMemory;
+    VkBuffer*                uniformBuffers;
+    VkDeviceMemory*          uniformBuffersMemory;
+    void**                   uniformBuffersMapped;
+    //Descriptor Sets
+    VkDescriptorSetLayout    descriptorSetLayout;
+    VkDescriptorPool         descriptorPool;
+    VkDescriptorSet*         descriptorSets;
     //Pipeline
     VkPipelineLayout         pipelineLayout;
     VkPipeline               graphicsPipeline;
@@ -156,7 +177,7 @@ Result renderer_initialize() {
     //
     printf("[Renderer]: Creating Instance\n");
 
-
+    
     // Instance Layers. For now we're either using all or none,
     // but later how this is handled may change
     u32 instanceLayerCount                  = 0;
@@ -348,6 +369,26 @@ Result renderer_initialize() {
     }
 
     //
+    // Descriptor Set Layout (where we configure out UBOs)
+    //
+    VkDescriptorSetLayoutBinding uboLayout = {
+        .binding = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        .pImmutableSamplers = nullptr,
+    };
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1,
+        .pBindings = &uboLayout,
+    };
+    if(vkCreateDescriptorSetLayout(v_state.device, &layoutInfo, nullptr, &v_state.descriptorSetLayout) != VK_SUCCESS) {
+        printf("Failed to create descriptor set layout!\n");
+        return ResultFailure;
+    }
+
+    //
     // graphicsPipeline
     //
     printf("Creating Pipeline\n");
@@ -380,6 +421,19 @@ Result renderer_initialize() {
         printf("Failed to create index buffer!\n");
         return ResultFailure;
     }
+    if(create_uniform_buffers() != ResultOk) {
+        printf("Failed to create uniform buffers\n");
+        return ResultFailure;
+    }
+    if(create_descriptor_pool(FRAMES_IN_FLIGHT) != ResultOk) {
+        printf("Failed to create descriptor pool\n");
+        return ResultFailure;
+    }
+    if(create_descriptor_sets(FRAMES_IN_FLIGHT) != ResultOk) {
+        printf("Failed to create descriptor sets!\n");
+        return ResultFailure;
+    }
+
 
     const VkCommandBufferAllocateInfo commandBufferAllocInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -629,12 +683,30 @@ void renderer_shutdown() {
     vkDestroyBuffer(v_state.device, v_state.indexBuffer, nullptr);
     vkFreeMemory(v_state.device, v_state.indexBufferMemory, nullptr);
 
+    for(u32 i = 0; i < FRAMES_IN_FLIGHT; i++) {
+        vkFreeDescriptorSets(v_state.device, v_state.descriptorPool, 1, &v_state.descriptorSets[i]);
+    }
+    free(v_state.descriptorSets);
+    //maybe put elsewhere?
+    vkDestroyPipelineLayout(v_state.device, v_state.pipelineLayout, nullptr);
+
+    vkDestroyDescriptorPool(v_state.device, v_state.descriptorPool, nullptr);
+    for(u32 i = 0; i < FRAMES_IN_FLIGHT; i++) {
+        vkDestroyBuffer(v_state.device, v_state.uniformBuffers[i], nullptr);
+        vkFreeMemory(v_state.device, v_state.uniformBuffersMemory[i], nullptr);
+    }
+    free(v_state.uniformBuffers);
+    free(v_state.uniformBuffersMemory);
+    free(v_state.uniformBuffersMapped);
+
 
     vkDestroyCommandPool(v_state.device, v_state.commandPool, nullptr);
 
     vkDestroyPipeline(v_state.device, v_state.graphicsPipeline, nullptr);
 
     cleanup_swapchain();
+
+    vkDestroyDescriptorSetLayout(v_state.device, v_state.descriptorSetLayout, nullptr);
 
     vkDestroyDevice(v_state.device, nullptr);
     vkDestroySurfaceKHR(v_state.instance, v_state.surface, nullptr);
@@ -745,6 +817,7 @@ Result record_command_buffer(VkCommandBuffer commandBuffer, const u32 imageIndex
     vkCmdBindIndexBuffer(commandBuffer, v_state.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
 
     //vkCmdDraw(commandBuffer, NUM_VERTICES, 1, 0, 0);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, v_state.pipelineLayout, 0, 1, &v_state.descriptorSets[frameIndex], 0, nullptr);
     vkCmdDrawIndexed(commandBuffer, NUM_INDICES, 1, 0, 0, 0);
 
     vkCmdEndRendering(commandBuffer);
@@ -766,7 +839,26 @@ Result record_command_buffer(VkCommandBuffer commandBuffer, const u32 imageIndex
     return ResultOk;
 }
 
-Result renderer_draw_frame() {
+Result update_uniform_buffers(f32 deltaTime, u32 frameIndex) {
+    UBO ubo = {};
+    Vec3 rotationAxis   = { 0.0f, 0.0f, 1.0f };
+
+    Vec3 cameraPosition = { 2.0f, 2.0f, 2.0f };
+    Vec3 cameraTarget   = { 0.0f, 0.0f, 0.0f };
+    Vec3 cameraUp       = { 0.0f, 0.0f, 1.0f };
+
+    f32  aspectRatio = (f32)v_state.swapChainExtent.width / (f32)v_state.swapChainExtent.height;
+
+    ubo.model = Mat4_rotate(Mat4_Identity, deltaTime * DEG_TO_RAD(90.0f), rotationAxis);
+    ubo.view  = Mat4_lookAt(cameraPosition, cameraTarget, cameraUp); 
+    ubo.projection = Mat4_perspective(DEG_TO_RAD(45.0f), aspectRatio, 0.1f, 10.0f);
+
+    ubo.projection.m22 *= -1;
+    memcpy(v_state.uniformBuffersMapped[frameIndex], &ubo, sizeof(ubo));
+    return ResultOk;
+}
+
+Result renderer_draw_frame(f32 deltaTime) {
     TIMESTEP(frameStartTime);
 
     //
@@ -795,12 +887,27 @@ Result renderer_draw_frame() {
     //index submit semaphore by image index rather than in-flight index
     VkSemaphore submitSemaphore = v_state.submitSemaphores[imageIndex];
 
+
+
+
+
+
     TIMESTEP(recordStartTime);
     //
     // Draw and Submit Commands
     //
     VkCommandBuffer drawCommandBuffer = v_state.commandBuffers[frameIndex];
     record_command_buffer(drawCommandBuffer, imageIndex);
+
+
+    update_uniform_buffers(deltaTime, frameIndex);
+
+
+
+
+
+
+
 
     TIMESTEP(submitStartTime);
 
@@ -1021,7 +1128,8 @@ Result create_pipeline() {
         .rasterizerDiscardEnable = VK_FALSE,
         .polygonMode = VK_POLYGON_MODE_FILL,
         .cullMode = VK_CULL_MODE_BACK_BIT,
-        .frontFace = VK_FRONT_FACE_CLOCKWISE,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        //.frontFace = VK_FRONT_FACE_CLOCKWISE,
         .depthBiasEnable = VK_FALSE,
         .lineWidth = 1.0f
     };
@@ -1066,12 +1174,12 @@ Result create_pipeline() {
     // connect UBOs and push constants
     VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = 0,
+        .setLayoutCount = 1,
+        .pSetLayouts = &v_state.descriptorSetLayout,
         .pushConstantRangeCount = 0,
     };
 
-    VkPipelineLayout pipelineLayout = nullptr;
-    if(vkCreatePipelineLayout(v_state.device, &pipelineLayoutCreateInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+    if(vkCreatePipelineLayout(v_state.device, &pipelineLayoutCreateInfo, nullptr, &v_state.pipelineLayout) != VK_SUCCESS) {
         printf("ERROR: Failed to create pipelineLayout!\n");
         return ResultFailure;
     }
@@ -1095,7 +1203,7 @@ Result create_pipeline() {
         .pMultisampleState = &multisampleStateCreateInfo,
         .pColorBlendState = &colorBlendStateCreateInfo,
         .pDynamicState = &dynamicStateCreateInfo,
-        .layout = pipelineLayout,
+        .layout = v_state.pipelineLayout,
         .renderPass = nullptr,
         .pNext = &pipelineRenderingCreateInfo,
     };
@@ -1105,7 +1213,7 @@ Result create_pipeline() {
         return ResultFailure;
     }
 
-    vkDestroyPipelineLayout(v_state.device, pipelineLayout, nullptr);
+    //vkDestroyPipelineLayout(v_state.device, pipelineLayout, nullptr);
     vkDestroyShaderModule(v_state.device, shaderModule, nullptr);
     free(shaderFile.data);
     return ResultOk;
@@ -1275,7 +1383,7 @@ Result create_index_buffer(VkBuffer* indexBuffer, VkDeviceMemory* indexBufferMem
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                     indexBuffer,
                     indexBufferMemory) != ResultOk) {
-        printf("Failed to create Vertex Buffer!\n");
+        printf("Failed to create Index Buffer!\n");
         return ResultFailure;
     }
 
@@ -1288,6 +1396,95 @@ Result create_index_buffer(VkBuffer* indexBuffer, VkDeviceMemory* indexBufferMem
     return ResultOk;
 }
 
+Result create_uniform_buffers() {
+    v_state.uniformBuffers       = calloc(FRAMES_IN_FLIGHT, sizeof(VkBuffer));
+    v_state.uniformBuffersMemory = calloc(FRAMES_IN_FLIGHT, sizeof(VkDeviceMemory));
+    v_state.uniformBuffersMapped = calloc(FRAMES_IN_FLIGHT, sizeof(UBO));
+ 
+    VkDeviceSize bufferSize = sizeof(UBO);
+    for(size_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
+        create_buffer(bufferSize,
+                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                &v_state.uniformBuffers[i], &v_state.uniformBuffersMemory[i]);
+        if(vkMapMemory(v_state.device, v_state.uniformBuffersMemory[i], 0, bufferSize, 0, &v_state.uniformBuffersMapped[i]) != VK_SUCCESS) {
+            printf("Failed to map UBO memory!\n");
+            return ResultFailure;
+        }
+    }
+    return ResultOk;
+}
+
+// Create a pool of drescriptorsetLayout, one per frame in flight
+Result create_descriptor_pool(u32 descriptorCount) {
+    VkDescriptorPoolSize poolSize = {
+        .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = descriptorCount,
+    };
+    VkDescriptorPoolCreateInfo poolCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+        .maxSets = descriptorCount,
+        .poolSizeCount = 1,
+        .pPoolSizes = &poolSize,
+    };
+    if(vkCreateDescriptorPool(v_state.device, &poolCreateInfo, nullptr, &v_state.descriptorPool) != VK_SUCCESS) {
+        printf("Failed to create descriptor pool!\n");
+        return ResultFailure;
+    }
+    return ResultOk;
+}
+
+Result create_descriptor_sets(u32 descriptorCount) {
+    //vkAllocateDescriptorSets expects an array of layouts the same size as the pool
+    // so we need to allocate an array of layouts dynamically here
+    VkDescriptorSetLayout* layouts;
+    layouts = calloc(descriptorCount, sizeof(VkDescriptorSetLayout));
+    for(u32 i = 0; i < descriptorCount; i++) {
+        layouts[i] = v_state.descriptorSetLayout;
+    }
+
+    VkDescriptorSetAllocateInfo allocInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = v_state.descriptorPool,
+        .descriptorSetCount = descriptorCount,
+        .pSetLayouts = layouts,
+    };
+
+    v_state.descriptorSets = calloc(descriptorCount, sizeof(VkDescriptorSet)); 
+    if(v_state.descriptorSets == nullptr || vkAllocateDescriptorSets(v_state.device, &allocInfo, v_state.descriptorSets) != VK_SUCCESS) {
+        printf("Failed to allocate descriptorSets!\n");
+        return ResultFailure;
+    }
+
+
+
+
+
+    for(size_t i = 0; i < descriptorCount; i++) {
+        VkDescriptorBufferInfo bufferInfo = {
+            .buffer = v_state.uniformBuffers[i],
+            .offset = 0,
+            .range = sizeof(UBO), //can use VK_WHOLE_SIZE if we're using the whole buffer
+        };
+        VkWriteDescriptorSet descriptorWrite = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = v_state.descriptorSets[i],
+            .dstBinding = 0,
+            .dstArrayElement = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .pBufferInfo = &bufferInfo,
+        };
+
+        vkUpdateDescriptorSets(v_state.device, 1, &descriptorWrite, 0, nullptr);
+    }
+
+    free(layouts);
+    return ResultOk;
+}
+
 void renderer_signal_framebuffer_resized(u32, u32) {
     v_state.framebufferResized = true;
 }
+
