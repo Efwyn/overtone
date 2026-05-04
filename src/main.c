@@ -60,8 +60,7 @@ int main() {
     }
 
     printf("Total Frames: %llu, Elapsed Time: %.2fs\n",
-            framecount,
-            timestep_to_s(elapsedTime));
+            framecount, timestep_to_s(elapsedTime));
     printf("Avg Frame: %.2fms (%.2ffps)\n",
             (float) timestep_to_ms(elapsedTime) / framecount,
             (double)framecount / timestep_to_s(elapsedTime)); 

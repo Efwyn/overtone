@@ -7,6 +7,9 @@
 #pragma once
 #include <stdint.h>
 
+#define PI 3.1415926535f
+#define DEG_TO_RAD(angle) ((angle) * (PI / 180.0f))
+
 typedef uint16_t u16;
 typedef uint32_t u32;
 typedef uint64_t u64;
@@ -26,6 +29,7 @@ inline u32 clamp_u32 (u32 val, u32 min, u32 max) {
     const u32 t = val < min ? min : val;
     return t > max ? max : t;
 }
+
 
 typedef enum Result {
     ResultOk,

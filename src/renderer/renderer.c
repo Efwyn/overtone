@@ -1,10 +1,13 @@
-// ==;===================================
+// =====================================
 // File: renderer/renderer.c
 // Description: The Core Renderer Source File 
 // Author: Morgan Carpenetti
 // Created On: 22-04-2026
 // ========================================
 #include "renderer/renderer.h"
+#include "renderer/debug_util.h"
+#include "renderer/swapchain.h"
+
 #include "types.h"
 #include "window.h"
 #include "timer.h"
@@ -20,8 +23,6 @@
 #include <vulkan/vulkan.h>
 #include <winscard.h>
 
-#define PI 3.1415926535f
-#define DEG_TO_RAD(angle) ((angle) * (PI / 180.0f))
 
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
@@ -38,19 +39,6 @@ const bool enableValidationLayers = true;
 
 #define FRAMES_IN_FLIGHT 2
 u32 frameIndex = 0;
-
-//fwd declarations for debug utils
-VkResult CreateDebugUtilsMessengerEXT(VkInstance instance,
-                                      const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
-                                      const VkAllocationCallbacks* pAllocator,
-                                      VkDebugUtilsMessengerEXT* pDebugMessenger);
-void DestroyDebugUtilsMessengerEXT(VkInstance instance,
-                                       VkDebugUtilsMessengerEXT debugMessenger,
-                                       const VkAllocationCallbacks* pAllocator);
-static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
-        VkDebugUtilsMessageSeverityFlagBitsEXT severity,
-        VkDebugUtilsMessageTypeFlagsEXT        type,
-        const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData, void*);
 
 typedef struct Vertex { 
     Vec2 pos;
@@ -82,7 +70,6 @@ typedef struct BinaryFile {
 } BinaryFile;
 
 Result load_binary_file(const char* filename, BinaryFile* file); 
-Result create_swapchain();
 Result create_pipeline();
 Result create_vertex_buffer(VkBuffer* vertexBuffer, VkDeviceMemory* vertexBufferMemory);
 Result create_index_buffer(VkBuffer* indexBuffer, VkDeviceMemory* indexBufferMemory);
@@ -124,13 +111,8 @@ typedef struct VulkanState {
     u32                      graphicsQueueIndex;
     VkQueue                  graphicsQueue;
     bool                     framebufferResized;
-    //Swapchain
-    VkSwapchainKHR           swapChain;
-    VkSurfaceFormatKHR       swapChainFormat;
-    VkExtent2D               swapChainExtent;
-    u32                      swapChainLength;
-    VkImage*                 swapChainImages;
-    VkImageView*             swapChainImageViews;
+
+    Swapchain                swapchain;
     //Buffers
     VkBuffer                 vertexBuffer;
     VkDeviceMemory           vertexBufferMemory;
@@ -153,7 +135,7 @@ typedef struct VulkanState {
     VkSemaphore*             submitSemaphores; //size based on swapchain image count
     VkFence                  frameFences[FRAMES_IN_FLIGHT];
 } VulkanState;
-VulkanState v_state = {};
+VulkanState v_state = {0};
 
 const VkApplicationInfo appInfo = {
     .sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -177,7 +159,6 @@ Result renderer_initialize() {
     //
     printf("[Renderer]: Creating Instance\n");
 
-    
     // Instance Layers. For now we're either using all or none,
     // but later how this is handled may change
     u32 instanceLayerCount                  = 0;
@@ -222,24 +203,8 @@ Result renderer_initialize() {
     //
 
     if(enableValidationLayers) {
-    printf("[Renderer]: Setting up Debug Callback\n");
-        VkDebugUtilsMessageSeverityFlagsEXT severityFlags = 
-            VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-            VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-        VkDebugUtilsMessageTypeFlagsEXT messageTypeFlags  = 
-            VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-            VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT |
-            VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
-
-        VkDebugUtilsMessengerCreateInfoEXT debugUtilsMessengerCreateInfo = {
-                .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-                .messageSeverity = severityFlags,
-                .messageType = messageTypeFlags,
-                .pfnUserCallback = debugCallback
-        };
-
-        if(CreateDebugUtilsMessengerEXT(v_state.instance, &debugUtilsMessengerCreateInfo, nullptr, &v_state.debugMessenger) != VK_SUCCESS) {
-            printf("ERROR: Failed to Create Debug Messenger!\n");
+        if(setup_debug_util(v_state.instance, &v_state.debugMessenger) != VK_SUCCESS) {
+            printf("Failed to setup debug utils\n");
             return ResultFailure;
         }
     }
@@ -363,7 +328,9 @@ Result renderer_initialize() {
     //
     printf("[Renderer]: Creating Swap Chain\n");
 
-    if(create_swapchain() !=  ResultOk) {
+    u32 width, height;
+    window_get_framebuffer_size(&width, &height);
+    if(Swapchain_create(&v_state.swapchain, v_state.physicalDevice,  v_state.device, v_state.surface) != ResultOk) {
         printf("[Renderer]: Failed to Create Swap Chain!\n");
         return ResultFailure;
     }
@@ -472,8 +439,8 @@ Result renderer_initialize() {
 
 
     // Submission semapphores are instead based on swapchain length
-    v_state.submitSemaphores = calloc(v_state.swapChainLength, sizeof(VkSemaphore));
-    for(u32 i = 0; i < v_state.swapChainLength; i++) {
+    v_state.submitSemaphores = calloc(v_state.swapchain.length, sizeof(VkSemaphore));
+    for(u32 i = 0; i < v_state.swapchain.length; i++) {
         if(vkCreateSemaphore(v_state.device, &semaphoreCreateInfo, nullptr, &v_state.submitSemaphores[i]) != VK_SUCCESS) {
             printf("ERROR: Failed to create Semaphore!\n");
             return ResultFailure;
@@ -490,177 +457,7 @@ Result renderer_initialize() {
     return ResultOk;
 }
 
-Result create_swapchain() {
-    VkSurfaceCapabilitiesKHR surfaceCapabilities;
-    u32 availableFormatsCount = 0;
-    VkSurfaceFormatKHR* availableSurfaceFormats;
-    u32 availablePresentModesCount = 0;
-    VkPresentModeKHR* availablePresentModes;
 
-    if(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(v_state.physicalDevice, v_state.surface, &surfaceCapabilities) != VK_SUCCESS) {
-        printf("ERROR: Failed to Get Surface Capabilites!\n");
-        return ResultFailure;
-    }
-
-    vkGetPhysicalDeviceSurfaceFormatsKHR(v_state.physicalDevice, v_state.surface, &availableFormatsCount, nullptr);
-    availableSurfaceFormats = calloc(availableFormatsCount, sizeof(VkSurfaceFormatKHR));
-    vkGetPhysicalDeviceSurfacePresentModesKHR(v_state.physicalDevice, v_state.surface, &availablePresentModesCount, nullptr);
-    availablePresentModes = calloc(availablePresentModesCount, sizeof(VkPresentModeKHR));
-
-    if(availableFormatsCount == 0 || availablePresentModesCount == 0) {
-        printf("ERROR: Failed to find any Surface Formats or Present Modes!\n");
-        return ResultFailure;
-    }
-
-    //populate the arrays
-    vkGetPhysicalDeviceSurfaceFormatsKHR(v_state.physicalDevice, v_state.surface, &availableFormatsCount, availableSurfaceFormats);
-    vkGetPhysicalDeviceSurfacePresentModesKHR(v_state.physicalDevice, v_state.surface, &availablePresentModesCount, availablePresentModes);
-
-
-    //Pick A Surface Format
-    // We'll go with the first that supports B8R8G8A8_SRGB and SRGB nonlinear 
-    u32 formatIndex = 0;
-    VkSurfaceFormatKHR chosenSurfaceFormat = availableSurfaceFormats[0];
-    while(formatIndex < availableFormatsCount) {
-        if(availableSurfaceFormats[formatIndex].format == VK_FORMAT_B8G8R8A8_SRGB &&
-           availableSurfaceFormats[formatIndex].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-            chosenSurfaceFormat = availableSurfaceFormats[formatIndex];
-            break;
-        }
-        formatIndex++;
-    }
-
-    if(formatIndex == availableFormatsCount)
-        printf("Failed to find preferred format, using first available instead\n");
-
-
-    //Pick a Present Mode, preferred is Mailbox, but we'll use fifo if we can't find it
-    //VK_PRESENT_MODE_IMMEDIATE_KHR is Vsync off
-    //const VkPresentModeKHR preferredPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
-    const VkPresentModeKHR preferredPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
-    VkPresentModeKHR chosenPresentMode = VK_PRESENT_MODE_FIFO_KHR;
-    for(u32 i = 0; i < availablePresentModesCount; ++i) {
-        if(availablePresentModes[i] == preferredPresentMode) {
-            chosenPresentMode = preferredPresentMode;
-            break;
-        }
-    }
-
-    // Set the extents of the swapchain
-    // if capabilites.currentExtent already set, use that,
-    // otherwise clamp the window size to the capabilites max/min
-    VkExtent2D swapChainExtent;
-    if(surfaceCapabilities.currentExtent.width != UINT32_MAX) {
-        swapChainExtent = surfaceCapabilities.currentExtent;
-    }
-    else {
-        u32 width, height;
-        window_get_framebuffer_size(&width, &height);
-        swapChainExtent.width = clamp_u32(width, surfaceCapabilities.minImageExtent.width, surfaceCapabilities.maxImageExtent.width);
-        swapChainExtent.height = clamp_u32(height, surfaceCapabilities.minImageExtent.height, surfaceCapabilities.maxImageExtent.height);
-    }
-
-    // Set the number of images we will have in the swapchain
-    // at least 1 more than the minimum, but don't exceed
-    // the max provided in surfaceCapabilites
-    // 0 in capabilities means no max given
-    const u32 defaultSwapchainImageCount = 3;
-    u32 minImageCount = max_u32(defaultSwapchainImageCount, surfaceCapabilities.minImageCount + 1);
-    if(0 < surfaceCapabilities.maxImageCount && surfaceCapabilities.maxImageCount < minImageCount) {
-        minImageCount = surfaceCapabilities.maxImageCount;
-    }
-
-
-    VkSwapchainCreateInfoKHR swapChainCreateInfo = {
-        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-        .surface = v_state.surface,
-        .minImageCount = minImageCount,
-        .imageFormat = chosenSurfaceFormat.format,
-        .imageColorSpace = chosenSurfaceFormat.colorSpace,
-        .imageExtent = swapChainExtent,
-        .imageArrayLayers = 1,
-        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        .preTransform = surfaceCapabilities.currentTransform,
-        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .presentMode = chosenPresentMode,
-        .clipped = true,
-        .oldSwapchain = nullptr
-    };
-
-    if(vkCreateSwapchainKHR(v_state.device, &swapChainCreateInfo, nullptr, &v_state.swapChain) != VK_SUCCESS) {
-        printf("ERROR: Failed to Create Swapchain!\n");
-        return ResultFailure;
-    }
-
-    if(vkGetSwapchainImagesKHR(v_state.device, v_state.swapChain, &v_state.swapChainLength, nullptr) != VK_SUCCESS) {
-        printf("ERROR: Failed to Get Swapchain Images!\n");
-        return ResultFailure;
-    }
-
-    //lifetime is until the end of program or we remake the swapchain with a new length
-    v_state.swapChainImages = calloc(v_state.swapChainLength, sizeof(VkImage));
-    if(!v_state.swapChainImages) {
-        printf("ERROR: Failed to allocate memory for swapchain images!\n");
-        return ResultFailure;
-    }
-
-    if(vkGetSwapchainImagesKHR(v_state.device, v_state.swapChain, &v_state.swapChainLength, v_state.swapChainImages) != VK_SUCCESS) {
-        printf("ERROR: Failed to Get Swapchain Images!\n");
-        return ResultFailure;
-    }
-
-    v_state.swapChainFormat = chosenSurfaceFormat;
-    v_state.swapChainExtent = swapChainExtent;
-
-    //Swapchain Image Views
-    VkImageViewCreateInfo imageViewCreateInfo = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = v_state.swapChainFormat.format,
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .levelCount = 1,
-            .layerCount = 1
-        },
-    };
-
-    //lifetime is until the end of program or we remake the swapchain with a new length
-    v_state.swapChainImageViews = calloc(v_state.swapChainLength, sizeof(VkImageView));
-    if(!v_state.swapChainImageViews) {
-        printf("ERROR: Failed to allocate memory for Swapchain VkImageViews!\n");
-        return ResultFailure;
-    }
-
-    for(u32 i = 0; i < v_state.swapChainLength; i++) {
-        imageViewCreateInfo.image = v_state.swapChainImages[i];
-        if(vkCreateImageView(v_state.device, &imageViewCreateInfo, nullptr, &v_state.swapChainImageViews[i]) != VK_SUCCESS) {
-            printf("ERROR: Failed to Create Swapchain VkImageView!\n");
-            return ResultFailure;
-        }
-    }
-
-    free(availableSurfaceFormats);
-    free(availablePresentModes);
-    return ResultOk; 
-}
-
-void cleanup_swapchain() {
-    for(u32 i = 0; i < v_state.swapChainLength; i++) {
-        vkDestroyImageView(v_state.device, v_state.swapChainImageViews[i], nullptr);
-    }
-    free(v_state.swapChainImageViews);
-    free(v_state.swapChainImages);
-
-    vkDestroySwapchainKHR(v_state.device, v_state.swapChain, nullptr); 
-}
-
-Result recreate_swapchain() {
-    renderer_wait_idle();
-    cleanup_swapchain();
-
-    return create_swapchain();
-}
 
 void renderer_shutdown() {
     printf("[Renderer]: Shutting Down\n");
@@ -670,7 +467,7 @@ void renderer_shutdown() {
         vkDestroySemaphore(v_state.device, v_state.acquireSemaphores[i], nullptr);
     }
 
-    for(u32 i = 0; i < v_state.swapChainLength; i++) {
+    for(u32 i = 0; i < v_state.swapchain.length; i++) {
         vkDestroySemaphore(v_state.device, v_state.submitSemaphores[i], nullptr);
     }
     free(v_state.submitSemaphores);
@@ -704,7 +501,7 @@ void renderer_shutdown() {
 
     vkDestroyPipeline(v_state.device, v_state.graphicsPipeline, nullptr);
 
-    cleanup_swapchain();
+    Swapchain_cleanup(&v_state.swapchain, v_state.device);
 
     vkDestroyDescriptorSetLayout(v_state.device, v_state.descriptorSetLayout, nullptr);
 
@@ -735,7 +532,7 @@ void transition_image_layout(VkCommandBuffer commandBuffer, const u32 imageIndex
         .newLayout = newLayout,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = v_state.swapChainImages[imageIndex],
+        .image = v_state.swapchain.images[imageIndex],
         .subresourceRange = {
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
             .baseMipLevel = 0,
@@ -776,7 +573,7 @@ Result record_command_buffer(VkCommandBuffer commandBuffer, const u32 imageIndex
     const VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
     const VkRenderingAttachmentInfo colorAttachmentInfo = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageView = v_state.swapChainImageViews[imageIndex],
+        .imageView = v_state.swapchain.imageViews[imageIndex],
         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -785,7 +582,7 @@ Result record_command_buffer(VkCommandBuffer commandBuffer, const u32 imageIndex
 
     VkRect2D renderArea = {
         .offset = {0, 0},
-        .extent = v_state.swapChainExtent,
+        .extent = v_state.swapchain.extents,
     };
     const VkRenderingInfo renderingInfo = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
@@ -799,8 +596,8 @@ Result record_command_buffer(VkCommandBuffer commandBuffer, const u32 imageIndex
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, v_state.graphicsPipeline);
 
     VkViewport viewport = {
-        .width = v_state.swapChainExtent.width,
-        .height = v_state.swapChainExtent.height,
+        .width = v_state.swapchain.extents.width,
+        .height = v_state.swapchain.extents.height,
     };
 
     /*
@@ -847,7 +644,7 @@ Result update_uniform_buffers(f32 deltaTime, u32 frameIndex) {
     Vec3 cameraTarget   = { 0.0f, 0.0f, 0.0f };
     Vec3 cameraUp       = { 0.0f, 0.0f, 1.0f };
 
-    f32  aspectRatio = (f32)v_state.swapChainExtent.width / (f32)v_state.swapChainExtent.height;
+    f32  aspectRatio = (f32)v_state.swapchain.extents.width / (f32)v_state.swapchain.extents.height;
 
     ubo.model = Mat4_rotate(Mat4_Identity, deltaTime * DEG_TO_RAD(90.0f), rotationAxis);
     ubo.view  = Mat4_lookAt(cameraPosition, cameraTarget, cameraUp);
@@ -873,11 +670,11 @@ Result renderer_draw_frame(f32 deltaTime) {
 
     u32 imageIndex = 0;
     VkSemaphore acquireSemaphore = v_state.acquireSemaphores[frameIndex];
-    VkResult acquireResult = vkAcquireNextImageKHR(v_state.device, v_state.swapChain, UINT64_MAX, acquireSemaphore, nullptr, &imageIndex);
+    VkResult acquireResult = vkAcquireNextImageKHR(v_state.device, v_state.swapchain.swapChain, UINT64_MAX, acquireSemaphore, nullptr, &imageIndex);
     if(acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
-        recreate_swapchain();
-        return ResultOk;
+        return Swapchain_recreate(&v_state.swapchain, v_state.physicalDevice, v_state.device, v_state.surface);
     }
+
     else if(acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
         assert(acquireResult == VK_TIMEOUT || acquireResult == VK_NOT_READY);
         printf("ERROR: Failed to retrieve next image!\n");
@@ -887,29 +684,16 @@ Result renderer_draw_frame(f32 deltaTime) {
     VkSemaphore submitSemaphore = v_state.submitSemaphores[imageIndex];
 
 
-
-
-
-
-    TIMESTEP(recordStartTime);
     //
     // Draw and Submit Commands
     //
+    TIMESTEP(recordStartTime);
     VkCommandBuffer drawCommandBuffer = v_state.commandBuffers[frameIndex];
     record_command_buffer(drawCommandBuffer, imageIndex);
-
-
     update_uniform_buffers(deltaTime, frameIndex);
 
 
-
-
-
-
-
-
     TIMESTEP(submitStartTime);
-
     VkPipelineStageFlags waitDestinationStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     const VkSubmitInfo submitInfo = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -928,16 +712,16 @@ Result renderer_draw_frame(f32 deltaTime) {
     }
 
 
-    TIMESTEP(presentStartTime);
     //
     // Frame Presentation
     //
+    TIMESTEP(presentStartTime);
     const VkPresentInfoKHR presentInfo = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .waitSemaphoreCount = 1,
         .pWaitSemaphores = &submitSemaphore,
         .swapchainCount = 1,
-        .pSwapchains = &v_state.swapChain,
+        .pSwapchains = &v_state.swapchain.swapChain,
         .pImageIndices = &imageIndex,
         .pResults = nullptr
     };
@@ -945,7 +729,9 @@ Result renderer_draw_frame(f32 deltaTime) {
     VkResult presentResult = vkQueuePresentKHR(v_state.graphicsQueue, &presentInfo);
     if(presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR || v_state.framebufferResized) {
         v_state.framebufferResized = false;
-        recreate_swapchain();
+        u32 width, height;
+        window_get_framebuffer_size(&width, &height);
+        Swapchain_recreate(&v_state.swapchain, v_state.physicalDevice, v_state.device, v_state.surface);
     }
     else if(presentResult != VK_SUCCESS) {
         printf("ERROR: Failed to present image!\n");
@@ -953,7 +739,6 @@ Result renderer_draw_frame(f32 deltaTime) {
     }
 
     TIMESTEP(frameEndTime);
-
     if(printFrameTiming) {
         printf("fence: %llu rec: %llu subm: %llu pre: %llu\n",
                 recordStartTime - frameStartTime,
@@ -966,46 +751,6 @@ Result renderer_draw_frame(f32 deltaTime) {
     return ResultOk; 
 }
 
-void renderer_wait_idle() {
-    vkDeviceWaitIdle(v_state.device);
-}
-
-VkResult CreateDebugUtilsMessengerEXT(VkInstance instance,
-                                      const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
-                                      const VkAllocationCallbacks* pAllocator,
-                                      VkDebugUtilsMessengerEXT* pDebugMessenger) {
-
-    PFN_vkCreateDebugUtilsMessengerEXT func =
-        (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
-    if(func != nullptr) {
-        return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
-    } else {
-        return VK_ERROR_EXTENSION_NOT_PRESENT;
-    }
-}
-
-void DestroyDebugUtilsMessengerEXT(VkInstance instance,
-                                       VkDebugUtilsMessengerEXT debugMessenger,
-                                       const VkAllocationCallbacks* pAllocator) {
-    PFN_vkDestroyDebugUtilsMessengerEXT func =
-        (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
-    func(instance, debugMessenger, pAllocator);
-}
-
-static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
-        VkDebugUtilsMessageSeverityFlagBitsEXT severity,
-        VkDebugUtilsMessageTypeFlagsEXT        type,
-        const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData, void*) {
-    if(severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-        printf("\033[91mValidation Layer: severity: %s, type %x, msg: %s\033[0m\n\n", "error", type, pCallbackData->pMessage);
-    }
-
-    if(severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
-        printf("Validation Layer: severity: %s, type %x, msg: %s\033[0m\n\n", "warning", type, pCallbackData->pMessage);
-    }
-
-    return VK_FALSE;
-}
 
 Result load_binary_file(const char* filename, BinaryFile* file) {
     FILE* fd;
@@ -1184,7 +929,7 @@ Result create_pipeline() {
     }
 
 
-    VkFormat attachmentFormats = v_state.swapChainFormat.format;
+    VkFormat attachmentFormats = v_state.swapchain.format.format;
 
     VkPipelineRenderingCreateInfo pipelineRenderingCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
@@ -1456,10 +1201,6 @@ Result create_descriptor_sets(u32 descriptorCount) {
         return ResultFailure;
     }
 
-
-
-
-
     for(size_t i = 0; i < descriptorCount; i++) {
         VkDescriptorBufferInfo bufferInfo = {
             .buffer = v_state.uniformBuffers[i],
@@ -1487,3 +1228,6 @@ void renderer_signal_framebuffer_resized(u32, u32) {
     v_state.framebufferResized = true;
 }
 
+void renderer_wait_idle() {
+    vkDeviceWaitIdle(v_state.device);
+}
