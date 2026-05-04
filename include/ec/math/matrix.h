@@ -5,9 +5,9 @@
 // Created On:  4/29/2026
 // ====================================
 #pragma once
-#include "types.h"
+#include "ec/types.h"
 
-#include "math/vec_types.h"
+#include "ec/math/vec_types.h"
 #include <math.h>
 #include <stdio.h>
 

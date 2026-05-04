@@ -4,10 +4,10 @@
 // Author: Morgan Carpenetti
 // Created On: 19-04-2026
 // ========================================
-#include "types.h"
-#include "window.h"
-#include "renderer/renderer.h"
-#include "timer.h"
+#include "ec/types.h"
+#include "pf/window.h"
+#include "rs/renderer.h"
+#include "ec/timer.h"
 
 #include <stdio.h>
 #include <stdlib.h> //EXIT_SUCCESS/EXIT_FAILURE

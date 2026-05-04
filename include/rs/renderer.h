@@ -6,7 +6,7 @@
 // ========================================
 #pragma once
 
-#include "types.h"
+#include "ec/types.h"
 
 Result renderer_initialize();
 void   renderer_shutdown();

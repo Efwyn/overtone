@@ -6,7 +6,7 @@
 // ====================================
 #pragma once
 
-#include "types.h"
+#include "ec/types.h"
 #include <vulkan/vulkan.h>
 
 typedef struct Swapchain {

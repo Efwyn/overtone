@@ -6,8 +6,8 @@
 // ====================================
 #include <stdio.h>
 
-#include "types.h"
-#include "math/vec_types.h"
+#include "ec/types.h"
+#include "ec/math/vec_types.h"
 
 bool Vec3_cmp_check () {
     Vec3 v1 = { 1.0f, 2.0f, 3.0f};

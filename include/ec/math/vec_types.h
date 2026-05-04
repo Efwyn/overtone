@@ -5,7 +5,7 @@
 // Created On:  4/28/2026
 // ====================================
 #pragma once
-#include "types.h"
+#include "ec/types.h"
 #include <math.h>
 #include <stdio.h>
 

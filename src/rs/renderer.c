@@ -4,15 +4,15 @@
 // Author: Morgan Carpenetti
 // Created On: 22-04-2026
 // ========================================
-#include "renderer/renderer.h"
-#include "renderer/debug_util.h"
-#include "renderer/swapchain.h"
+#include "rs/renderer.h"
+#include "rs/debug_util.h"
+#include "rs/swapchain.h"
 
-#include "types.h"
-#include "window.h"
-#include "timer.h"
-#include "math/vec_types.h"
-#include "math/matrix.h"
+#include "ec/types.h"
+#include "ec/math/vec_types.h"
+#include "ec/math/matrix.h"
+#include "ec/timer.h"
+#include "pf/window.h"
 
 #include <assert.h>
 #include <stdint.h>

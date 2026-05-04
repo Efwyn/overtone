@@ -4,8 +4,7 @@
 // Author: Morgan Carpenetti
 // Created On: 19-04-2026
 // ============================================
-#include "window.h"
-#include "types.h"
+#include "pf/window.h"
 
 #include <stdio.h>
 #include <assert.h>
@@ -13,12 +12,13 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-#define WINDOW_CLASSNAME "OvertoneWindowClass"
+#define WINDOW_CLASSNAME "OtWindowClass"
+#define MAX_TITLE_LENGTH 64
 
 typedef struct Window {
     HWND hwnd;
     char title[MAX_TITLE_LENGTH];
-    u32 width, height;
+    u32  width, height;
     bool shouldClose;
 } Window;
 

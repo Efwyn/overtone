@@ -6,14 +6,12 @@
 // ============================================
 #pragma once
 
-#include "types.h"
+#include "ec/types.h"
 
 #ifdef _WIN32
     #define VK_USE_PLATFORM_WIN32_KHR
 #endif
 #include <vulkan/vulkan.h>
-
-#define MAX_TITLE_LENGTH 64
 
 Result     window_create(const u32 width, const u32 height, char* const title);
 void       window_cleanup();
