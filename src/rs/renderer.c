@@ -7,6 +7,7 @@
 #include "rs/renderer.h"
 #include "rs/debug_util.h"
 #include "rs/swapchain.h"
+#include "load.h"
 
 #include "ec/types.h"
 #include "ec/math/vec_types.h"
@@ -64,12 +65,6 @@ const u16 meshIndices[NUM_INDICES] = {
     0, 1, 2, 2, 3, 0,
 };
 
-typedef struct BinaryFile {
-    char* data;
-    size_t size;
-} BinaryFile;
-
-Result load_binary_file(const char* filename, BinaryFile* file); 
 Result create_pipeline();
 Result create_vertex_buffer(VkBuffer* vertexBuffer, VkDeviceMemory* vertexBufferMemory);
 Result create_index_buffer(VkBuffer* indexBuffer, VkDeviceMemory* indexBufferMemory);
@@ -135,7 +130,7 @@ typedef struct VulkanState {
     VkSemaphore*             submitSemaphores; //size based on swapchain image count
     VkFence                  frameFences[FRAMES_IN_FLIGHT];
 } VulkanState;
-VulkanState v_state = {0};
+VulkanState v_state = {};
 
 const VkApplicationInfo appInfo = {
     .sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -752,50 +747,16 @@ Result renderer_draw_frame(f32 deltaTime) {
 }
 
 
-Result load_binary_file(const char* filename, BinaryFile* file) {
-    FILE* fd;
-    if(fopen_s(&fd, filename, "rb") != 0) 
-        return ResultFailure;
-
-    //run to the end of the file and count how many bytes to allocate
-    if(fseek(fd, 0, SEEK_END) < 0) return ResultFailure;
-    size_t size = ftell(fd);
-    file->data = malloc(size);
-
-    if(fseek(fd, 0, SEEK_SET) < 0) return ResultFailure;
-
-    if(fread(file->data, size, 1, fd) < 0) return ResultFailure;
-
-    file->size = size;
-    fclose(fd);
-
-    return ResultOk;
-}
-
-Result create_shader_module(BinaryFile shaderFile, VkShaderModule* shaderModule) {
-    VkShaderModuleCreateInfo shaderModuleCreateInfo = {
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = shaderFile.size,
-        .pCode = (const u32*)shaderFile.data,
-    };
-
-    if(vkCreateShaderModule(v_state.device, &shaderModuleCreateInfo, nullptr, shaderModule) != VK_SUCCESS) {
-        return ResultFailure;
-    }
-    return ResultOk;
-}
-
 
 Result create_pipeline() {
     BinaryFile shaderFile = {};
-    if(load_binary_file
-        ("shaders/triangle.spv", &shaderFile) != ResultOk) {
+    if(load_binary_file("shaders/triangle.spv", &shaderFile) != ResultOk) {
         printf("ERROR: Failed to load shader!\n");
         return ResultFailure;
     }
 
     VkShaderModule shaderModule = nullptr;
-    if(create_shader_module(shaderFile, &shaderModule) != ResultOk) {
+    if(create_shader_module(shaderFile, v_state.device, &shaderModule) != ResultOk) {
         printf("ERROR: Failed to Create Shader Module");
         return ResultFailure;
     }
