@@ -32,7 +32,6 @@ inline u32 clamp_u32 (u32 val, u32 min, u32 max) {
 
 
 typedef enum Result {
-    ResultOk,
+    ResultOk = 0,
     ResultFailure
 } Result;
-

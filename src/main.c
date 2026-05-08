@@ -6,12 +6,12 @@
 // ========================================
 #include "ec/types.h"
 #include "pf/window.h"
+
 #include "rs/renderer.h"
 #include "ec/timer.h"
 
 #include <stdio.h>
 #include <stdlib.h> //EXIT_SUCCESS/EXIT_FAILURE
-
 
 int main() {
     //
@@ -29,6 +29,8 @@ int main() {
         printf("ERROR! Failed to Initialize Renderer\n");
         return EXIT_FAILURE;
     }
+
+
 
     //
     // Main Loop
@@ -62,7 +64,7 @@ int main() {
     printf("Total Frames: %llu, Elapsed Time: %.2fs\n",
             framecount, timestep_to_s(elapsedTime));
     printf("Avg Frame: %.2fms (%.2ffps)\n",
-            (float) timestep_to_ms(elapsedTime) / framecount,
+            (float)timestep_to_ms(elapsedTime) / framecount,
             (double)framecount / timestep_to_s(elapsedTime)); 
     renderer_wait_idle();
 
