@@ -47,7 +47,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
 }
 
 VkResult setup_debug_util(VkInstance instance, VkDebugUtilsMessengerEXT* debugMessenger) {
-    printf("[Renderer]: Setting up Debug Callback\n");
+    printf("[RS]: Setting up Debug Callback\n");
     VkDebugUtilsMessageSeverityFlagsEXT severityFlags = 
         VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
         VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;

@@ -10,6 +10,7 @@
 #include "ec/math/vec_types.h"
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 typedef struct Mat4 {
     f32 m11, m12, m13, m14;
@@ -18,11 +19,21 @@ typedef struct Mat4 {
     f32 m41, m42, m43, m44;
 } Mat4;
 
+inline Vec4 Mat4_mulV4(Mat4 m, Vec4 v) {
+    Vec4 out = {
+        .x = m.m11 * v.x + m.m12 * v.y + m.m13 * v.z + m.m14 * v.w,
+        .y = m.m21 * v.x + m.m22 * v.y + m.m23 * v.z + m.m24 * v.w,
+        .z = m.m31 * v.x + m.m32 * v.y + m.m33 * v.z + m.m34 * v.w,
+        .w = m.m41 * v.x + m.m42 * v.y + m.m43 * v.z + m.m44 * v.w,
+    };
+    return out;
+}
+
 inline void Mat4_print(Mat4 m) {
     printf("%f, %f, %f, %f\n", m.m11, m.m12, m.m13, m.m14);
     printf("%f, %f, %f, %f\n", m.m21, m.m22, m.m23, m.m24);
     printf("%f, %f, %f, %f\n", m.m31, m.m32, m.m33, m.m34);
-    printf("%f, %f, %f, %f\n\n", m.m41, m.m42, m.m43, m.m44);
+    printf("%f, %f, %f, %f\n", m.m41, m.m42, m.m43, m.m44);
 }
 
 const Mat4 Mat4_Identity = {
@@ -32,10 +43,9 @@ const Mat4 Mat4_Identity = {
     0.0f, 0.0f, 0.0f, 1.0f,
 };
 
-typedef struct Mat2 {
-    f32 m11, M12;
-    f32 m21, m22;
-} Mat2;
+inline bool Mat4_equal(const Mat4* A, const Mat4* B) {
+    return memcmp(A, B, sizeof(Mat4)) == 0;
+}
 
 //TODO: Implement this instead?
 //Strassen's Algorithm
@@ -104,13 +114,13 @@ inline Mat4 Mat4_rotate(Mat4 M, f32 angle, Vec3 axis) {
 
 inline Mat4 Mat4_translate(Vec3 d) {
     Mat4 T = Mat4_Identity;
-    T.m14 = d.x;
-    T.m24 = d.y;
-    T.m34 = d.z;
+    T.m41 = d.x;
+    T.m42 = d.y;
+    T.m43 = d.z;
     return T;
 }
 
-// Based on Real-time Rendering, 4th Edition, figure 4.20
+// Real-time Rendering, 4th Edition, figure 4.20
 inline Mat4 Mat4_lookAt(Vec3 eye, Vec3 center, Vec3 up) {
     Vec3 f = Vec3_norm(Vec3_sub(center, eye));
     Vec3 s = Vec3_norm(Vec3_cross(f, up));
@@ -125,19 +135,24 @@ inline Mat4 Mat4_lookAt(Vec3 eye, Vec3 center, Vec3 up) {
     return M;
 }
 
-
 // Perspective projection transform
-// Figure 4.75, Real-time Rendering, 4th Edition
-inline Mat4 Mat4_perspective(f32 fov, f32 ar, f32 n, f32 f) {
-   f32 c = 1.0f / tan(fov / 2.0f);
-   f32 dSum = n + f;
-   f32 dDiff = f - n;
-   Mat4 P = {
-           c / ar,             0.0f,        0.0f,             0.0f,
-            0.0f,              -c,          0.0f,             0.0f,
-            0.0f,              0.0f,  (-dSum / dDiff), (-2.0f * f * n) / (dDiff),
-            0.0f,              0.0f,       -1.0f,             0.0f,
-   };
+// Figure 4.75/4.76, Real-time Rendering, 4th Edition
+// y is inverted
+// z clip is moved to [0, 1]
+// fov (in radians)
+// aspect ratio (width/height)
+// near plane
+// far plane
+inline Mat4 Mat4_perspective(f32 fov, f32 aspectRatio, f32 near, f32 far) {
+    f32 c = 1.0f / tan(fov / 2.0f);
+    Mat4 P = {
+        .m11 =  c / aspectRatio,
+        .m22 = -c,
+        .m33 = -far / (far - near),
+        .m34 = -(far * near) / (far - near),
+        .m43 = -1.0f,
+    };
+
     return P;
 }
 

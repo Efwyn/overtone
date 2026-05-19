@@ -19,6 +19,7 @@ int main() {
     //
     timer_init();
 
+
     if(window_create(800 , 600, "Hello Overtone!")) {
         printf("ERROR! Failed to Create Window\n");
         return EXIT_FAILURE;
@@ -64,8 +65,8 @@ int main() {
     printf("Total Frames: %llu, Elapsed Time: %.2fs\n",
             framecount, timestep_to_s(elapsedTime));
     printf("Avg Frame: %.2fms (%.2ffps)\n",
-            (float)timestep_to_ms(elapsedTime) / framecount,
-            (double)framecount / timestep_to_s(elapsedTime)); 
+            (f32)timestep_to_ms(elapsedTime) / framecount,
+            (f64)framecount / timestep_to_s(elapsedTime)); 
     renderer_wait_idle();
 
     //

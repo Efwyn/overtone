@@ -7,6 +7,7 @@
 #include "rs/renderer.h"
 #include "rs/debug_util.h"
 #include "rs/swapchain.h"
+#include "rs/vertex.h"
 
 #include "ec/types.h"
 #include "ec/load.h"
@@ -23,9 +24,9 @@
 
 
 #ifdef NDEBUG
-const bool enableValidationLayers = false;
+    const bool enableValidationLayers = false;
 #else
-const bool enableValidationLayers = true;
+    const bool enableValidationLayers = true;
 #endif
 
 //#define PRINT_FRAME_TIMING
@@ -38,50 +39,23 @@ const bool enableValidationLayers = true;
 #define FRAMES_IN_FLIGHT 2
 u32 frameIndex = 0;
 
-typedef struct Vertex { 
-    Vec3 pos;
-    Vec2 texCoord;
-} Vertex;
-
 typedef struct UBO {
     Mat4 model;
     Mat4 view;
     Mat4 projection;
 } UBO;
 
-#define NUM_VERTICES 8
-#define NUM_INDICES 12
-const Vertex meshVertices[NUM_VERTICES] = {
-    {{-0.5f, -0.5f, 0.0f}, {0.0f, 0.0f}},
-    {{ 0.5f, -0.5f, 0.0f}, {1.0f, 0.0f}},
-    {{ 0.5f,  0.5f, 0.0f}, {1.0f, 1.0f}},
-    {{-0.5f,  0.5f, 0.0f}, {0.0f, 1.0f}},
-
-    {{-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f}},
-    {{ 0.5f, -0.5f, -0.5f}, {1.0f, 0.0f}},
-    {{ 0.5f,  0.5f, -0.5f}, {1.0f, 1.0f}},
-    {{-0.5f,  0.5f, -0.5f}, {0.0f, 1.0f}},
-};
-
-const u16 meshIndices[NUM_INDICES] = {
-    0, 1, 2, 2, 3, 0,
-    4, 5, 6, 6, 7, 4,
-};
-
-#define SHADER_NAME  "shaders/triangle.spv"
-#define TEXTURE_NAME "textures/test.bmp"
+#define SHADER_NAME  "shaders/flat_textured.spv"
+#define TEXTURE_NAME "textures/viking_room.bmp"
+#define MESH_PATH    "meshes/viking_room.obj"
 
 Result create_pipeline();
-Result create_vertex_buffer(VkBuffer* vertexBuffer, VkDeviceMemory* vertexBufferMemory);
-Result create_index_buffer(VkBuffer* indexBuffer, VkDeviceMemory* indexBufferMemory);
+Result create_vertex_buffer(Vertex* vertices, u32 numVertices, VkBuffer* vertexBuffer, VkDeviceMemory* vertexBufferMemory);
+Result create_index_buffer(u32* indices, u32 numIndices, VkBuffer* indexBuffer, VkDeviceMemory* indexBufferMemory);
 Result create_depth_buffer();
 Result recreate_depth_buffer();
 Result create_uniform_buffers();
-Result create_buffer(VkDeviceSize size,
-                   VkBufferUsageFlags usage,
-                   VkMemoryPropertyFlags memoryProperties,
-                   VkBuffer* buffer,
-                   VkDeviceMemory* bufferMemory);
+Result create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memoryProperties, VkBuffer* buffer, VkDeviceMemory* bufferMemory);
 Result copy_buffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
 Result create_descriptor_pools(u32 descriptorCount);
 Result create_descriptor_sets(u32 descriptorCount);
@@ -134,6 +108,7 @@ typedef struct VulkanState {
     VkFormat                 depthBufferFormat;
 
     // vertex/index buffers
+    MeshData                 meshData;
     VkBuffer                 vertexBuffer;
     VkDeviceMemory           vertexBufferMemory;
     VkBuffer                 indexBuffer;
@@ -168,15 +143,15 @@ const VkApplicationInfo appInfo = {
 
 Result renderer_initialize() {
     if(enableValidationLayers) {
-        printf("[Renderer]: Validation Layers are ON!\n");
+        printf("[RS]: Validation Layers are ON!\n");
     } else {
-        printf("[Renderer]: Validation Layers are OFF!\n");
+        printf("[RS]: Validation Layers are OFF!\n");
     }
 
     //
     // Vulkan Instance
     //
-    printf("[Renderer]: Creating Instance\n");
+    printf("[RS]: Creating Instance\n");
 
     // Instance Layers. For now we're either using all or none,
     // but later how this is handled may change
@@ -212,7 +187,7 @@ Result renderer_initialize() {
     };
 
     if(vkCreateInstance(&instanceCreateInfo, nullptr, &vs.instance) != VK_SUCCESS) {
-        printf("ERROR: Failed to Create Vulkan Instance!\n");
+        printf("[RS]: Failed to Create Vulkan Instance!\n");
         return ResultFailure;
     }
 
@@ -223,7 +198,7 @@ Result renderer_initialize() {
 
     if(enableValidationLayers) {
         if(setup_debug_util(vs.instance, &vs.debugMessenger) != VK_SUCCESS) {
-            printf("Failed to setup debug utils\n");
+            printf("[RS]: Failed to setup Debug Callback\n");
             return ResultFailure;
         }
     }
@@ -231,11 +206,11 @@ Result renderer_initialize() {
     //
     // Get a PhysicalDevice
     //
-    printf("[Renderer]: Selecting Physical Device\n");
+    printf("[RS]: Selecting Physical Device\n");
 
     u32 physicalDeviceCount = 0;
     vkEnumeratePhysicalDevices(vs.instance, &physicalDeviceCount, nullptr);
-    printf("[Renderer]: %d PhysicalDevice(s) found!\n", physicalDeviceCount);
+    printf("[RS]: %d PhysicalDevice(s) found!\n", physicalDeviceCount);
 
     VkPhysicalDevice* physicalDeviceList = calloc(physicalDeviceCount, sizeof(VkPhysicalDevice));
     vkEnumeratePhysicalDevices(vs.instance, &physicalDeviceCount, physicalDeviceList);
@@ -243,7 +218,7 @@ Result renderer_initialize() {
     VkPhysicalDeviceProperties props;
     for(u32 i = 0; i < physicalDeviceCount; i++) {
         vkGetPhysicalDeviceProperties(physicalDeviceList[i], &props);
-        printf("[Renderer]: \tDevice [%d]: %s\n", i, props.deviceName);
+        printf("[RS]: \tDevice [%d]: %s\n", i, props.deviceName);
     }
 
     // TODO: ENSURE PHYSICAL DEVICE SUPPORTS REQUIRED FEATURES
@@ -252,16 +227,16 @@ Result renderer_initialize() {
     //
     // Create A Surface from the window
     //
-    printf("[Renderer]: Creating Surface\n");
+    printf("[RS]: Creating Surface\n");
     if(window_create_vulkan_surface(vs.instance, &vs.surface) != VK_SUCCESS) {
-        printf("ERROR: Failed to Create Surface!\n");
+        printf("[RS]: Failed to Create Surface!\n");
         return ResultFailure;
     }
 
     //
     // Determine Queue Info
     //
-    printf("[Renderer]: Picking Queue Families\n");
+    printf("[RS]: Picking Queue Families\n");
 
     //Get a List of Properties for each queue family available on the physical device
     u32 queueFamilyCount = 0;
@@ -277,7 +252,7 @@ Result renderer_initialize() {
         VkBool32 surfaceSupported = VK_FALSE;
         graphicsBit = (queueFamilyProps[qfpIndex].queueFlags & VK_QUEUE_GRAPHICS_BIT);
         if(vkGetPhysicalDeviceSurfaceSupportKHR(vs.physicalDevice, qfpIndex, vs.surface, &surfaceSupported) != VK_SUCCESS) {
-            printf("ERROR: Unable to Query Physical Device for Surface Support!\n");
+            printf("[RS]: Unable to Query Physical Device for Surface Support!\n");
             return ResultFailure;
         }
 
@@ -287,7 +262,7 @@ Result renderer_initialize() {
         }
     }
     if(graphicsQueueIndex == ~0u) {
-        printf("ERROR: Could not find a suitable Queue Family!\n");
+        printf("[RS]: Could not find a suitable Queue Family!\n");
         return ResultFailure;
     }
 
@@ -303,7 +278,7 @@ Result renderer_initialize() {
     //
     // Create Logical Device
     //
-    printf("[Renderer]: Creating Logical Device\n");
+    printf("[RS]: Creating Logical Device\n");
 
     VkPhysicalDeviceExtendedDynamicStateFeaturesEXT dynamicStateFeatures = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT,
@@ -339,7 +314,7 @@ Result renderer_initialize() {
     };
 
     if(vkCreateDevice(vs.physicalDevice, &deviceCreateInfo, nullptr, &vs.device) != VK_SUCCESS) {
-        printf("ERROR: Failed to Create Logical Device!\n");
+        printf("[RS]: Failed to Create Logical Device!\n");
         return ResultFailure;
     }
 
@@ -348,12 +323,12 @@ Result renderer_initialize() {
     //
     // SwapChain Creation
     //
-    printf("[Renderer]: Creating Swap Chain\n");
+    printf("[RS]: Creating Swap Chain\n");
 
     u32 width, height;
     window_get_framebuffer_size(&width, &height);
     if(Swapchain_create(&vs.swapchain, vs.physicalDevice,  vs.device, vs.surface) != ResultOk) {
-        printf("[Renderer]: Failed to Create Swap Chain!\n");
+        printf("[RS]: Failed to Create Swap Chain!\n");
         return ResultFailure;
     }
 
@@ -384,7 +359,7 @@ Result renderer_initialize() {
         .pBindings = layoutBindings 
     };
     if(vkCreateDescriptorSetLayout(vs.device, &layoutInfo, nullptr, &vs.descriptorSetLayout) != VK_SUCCESS) {
-        printf("Failed to create descriptor set layout!\n");
+        printf("[RS]: Failed to create descriptor set layout!\n");
         return ResultFailure;
     }
 
@@ -392,17 +367,17 @@ Result renderer_initialize() {
     // Depth Buffer
     //
     if(create_depth_buffer() != ResultOk) {
-        printf("Failed to create depth buffer!\n");
+        printf("[RS]: Failed to create depth buffer!\n");
         return ResultFailure;
     }
 
     //
     // graphicsPipeline
     //
-    printf("Creating Pipeline\n");
+    printf("[RS]: Creating Pipeline\n");
 
     if(create_pipeline() != ResultOk) {
-        printf("ERROR: Failed to create pipeline!\n");
+        printf("[RS]: Failed to create pipeline!\n");
         return ResultFailure;
     }
 
@@ -416,57 +391,60 @@ Result renderer_initialize() {
     };
 
     if(vkCreateCommandPool(vs.device, &commandPoolCreateInfo, nullptr, &vs.commandPool) != VK_SUCCESS) {
-        printf("ERROR: Failed to create command pool!\n");
+        printf("[RS]: Failed to create command pool!\n");
         return ResultFailure;
     }
 
 
+    printf("[RS]: Loading meshes...\n");
+    load_obj_file(MESH_PATH, &vs.meshData);
 
- 
-    if(create_vertex_buffer(&vs.vertexBuffer, &vs.vertexBufferMemory) != ResultOk) {
-        printf("Failed to create vertex buffer!\n");
+    if(create_vertex_buffer(vs.meshData.vertices, vs.meshData.vertexCount, &vs.vertexBuffer, &vs.vertexBufferMemory) != ResultOk) {
+        printf("[RS]: Failed to create vertex buffer!\n");
         return ResultFailure;
     }
-    if(create_index_buffer(&vs.indexBuffer, &vs.indexBufferMemory) != ResultOk) {
-        printf("Failed to create index buffer!\n");
+    if(create_index_buffer(vs.meshData.indices, vs.meshData.indexCount, &vs.indexBuffer, &vs.indexBufferMemory) != ResultOk) {
+        printf("[RS]: Failed to create index buffer!\n");
         return ResultFailure;
     }
+
     if(create_uniform_buffers() != ResultOk) {
-        printf("Failed to create uniform buffers\n");
+        printf("[RS]: Failed to create uniform buffers\n");
         return ResultFailure;
     }
     if(create_descriptor_pools(FRAMES_IN_FLIGHT) != ResultOk) {
-        printf("Failed to create descriptor pool\n");
+        printf("[RS]: Failed to create descriptor pool\n");
         return ResultFailure;
     }
 
 
 
-
+    printf("[RS]: Loading textures...\n");
     Image img = {};
     if(load_image(TEXTURE_NAME, &img) != ResultOk) {
-        printf("Failed to load texture!\n");
+        printf("[RS]: Failed to load texture!\n");
         return ResultFailure;
     }
 
     if(create_texture(img,  &vs.textureImage, &vs.textureImageMemory) != ResultOk) {
-        printf("ERROR: Failed to create texture!\n");
+        printf("[RS]: Failed to create texture!\n");
         return ResultFailure;
     }
 
     if(create_imageview(vs.textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, &vs.textureImageView) != ResultOk) {
-        printf("Error: Failed to create texture image view\n");
+        printf("[RS]: Failed to create texture image view\n");
         return ResultFailure;
     }
 
     if(create_texture_sampler() != ResultOk) {
-        printf("Failed to create texture sampler\n");
+        printf("[RS]: Failed to create texture sampler\n");
         return ResultFailure;
     }
 
+
     //depends on textureimageview
     if(create_descriptor_sets(FRAMES_IN_FLIGHT) != ResultOk) {
-        printf("Failed to create descriptor sets!\n");
+        printf("[RS]: Failed to create descriptor sets!\n");
         return ResultFailure;
     }
 
@@ -479,7 +457,7 @@ Result renderer_initialize() {
     };
 
     if(vkAllocateCommandBuffers(vs.device, &commandBufferAllocInfo, vs.commandBuffers) != VK_SUCCESS) {
-        printf("ERROR: Failed to Allocate Command Buffers!\n");
+        printf("[RS]: Failed to Allocate Command Buffers!\n");
         return ResultFailure;
     }
 
@@ -496,11 +474,11 @@ Result renderer_initialize() {
 
     for(u32 i = 0; i < FRAMES_IN_FLIGHT; i++) {
         if(vkCreateSemaphore(vs.device, &semaphoreCreateInfo, nullptr, &vs.acquireSemaphores[i]) != VK_SUCCESS) {
-            printf("ERROR: Failed to create Semaphore!\n");
+            printf("[RS]: Failed to create Semaphore!\n");
             return ResultFailure;
         }
         if(vkCreateFence(vs.device, &fenceCreateInfo, nullptr, &vs.frameFences[i]) != VK_SUCCESS) {
-            printf("ERROR: Failed to create fence!\n");
+            printf("[RS]: Failed to create fence!\n");
             return ResultFailure;
         }
     }
@@ -510,18 +488,20 @@ Result renderer_initialize() {
     vs.submitSemaphores = calloc(vs.swapchain.length, sizeof(VkSemaphore));
     for(u32 i = 0; i < vs.swapchain.length; i++) {
         if(vkCreateSemaphore(vs.device, &semaphoreCreateInfo, nullptr, &vs.submitSemaphores[i]) != VK_SUCCESS) {
-            printf("ERROR: Failed to create Semaphore!\n");
+            printf("[RS]: Failed to create Semaphore!\n");
             return ResultFailure;
         }
     }
 
-    printf("Renderer Initialization Complete\n");
+    printf("[RS]: Initialization Complete\n");
 
     //clean up our dynamic memory
     free(img.data);
     free(queueFamilyProps);
     free(instanceExtensions);
     free(physicalDeviceList);
+    free(vs.meshData.vertices);
+    free(vs.meshData.indices);
 
     return ResultOk;
 }
@@ -529,7 +509,7 @@ Result renderer_initialize() {
 
 
 void renderer_shutdown() {
-    printf("[Renderer]: Shutting Down\n");
+    printf("[RS]: Shutting Down\n");
 
     for(u32 i = 0; i < FRAMES_IN_FLIGHT; i++) {
         vkDestroyFence(vs.device, vs.frameFences[i], nullptr);
@@ -637,7 +617,7 @@ Result record_command_buffer(VkCommandBuffer commandBuffer, const u32 imageIndex
     };
 
     if(vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
-        printf("ERROR: Failed to Begin Command Buffer!\n");
+        printf("[RS]: Failed to Begin Command Buffer!\n");
         return ResultFailure;
     }
 
@@ -654,8 +634,8 @@ Result record_command_buffer(VkCommandBuffer commandBuffer, const u32 imageIndex
                             VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                             VK_IMAGE_ASPECT_DEPTH_BIT);
 
-    const VkClearValue clearColor = {{{0.f, 0.0f, 0.0f, 1.0f}}};
-    const VkClearValue clearDepth = {{{1.0f, 0}}};
+    const VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+    const VkClearValue clearDepth ={{{1.0f, 0}}};
 
     const VkRenderingAttachmentInfo colorAttachmentInfo = {
         .sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -694,26 +674,26 @@ Result record_command_buffer(VkCommandBuffer commandBuffer, const u32 imageIndex
     VkViewport viewport = {
         .width = vs.swapchain.extents.width,
         .height = vs.swapchain.extents.height,
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
     };
 
-    /*
-        .extent = vs.swapChainExtent,
-    };*/
-    //VkScissor scissor;
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer, 0, 1, &renderArea);
 
+    //Draw the mesh
     VkBuffer vertexBuffers[] = {vs.vertexBuffer};
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
 
-    vkCmdBindIndexBuffer(commandBuffer, vs.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+    vkCmdBindIndexBuffer(commandBuffer, vs.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vs.pipelineLayout, 0, 1, &vs.descriptorSets[frameIndex], 0, nullptr);
-    vkCmdDrawIndexed(commandBuffer, NUM_INDICES, 1, 0, 0, 0);
+    vkCmdDrawIndexed(commandBuffer, vs.meshData.indexCount, 1, 0, 0, 0);
 
     vkCmdEndRendering(commandBuffer);
 
+    //End Frame
     transition_image_layout(commandBuffer, vs.swapchain.images[imageIndex],
                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,          VK_ACCESS_2_NONE,
@@ -722,7 +702,7 @@ Result record_command_buffer(VkCommandBuffer commandBuffer, const u32 imageIndex
 
 
     if(vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
-        printf("ERROR: Failed to record command buffer!\n");
+        printf("[RS]: Failed to record command buffer!\n");
         return ResultFailure;
     }
 
@@ -733,15 +713,15 @@ Result update_uniform_buffers(f32 deltaTime, u32 frameIndex) {
     UBO ubo = {};
     Vec3 rotationAxis   = { 0.0f, 0.0f, 1.0f };
 
-    Vec3 cameraPosition = { 2.0f, 2.0f, 2.0f };
+    Vec3 cameraPosition = { 1.0f, 1.0f, 1.5f };
     Vec3 cameraTarget   = { 0.0f, 0.0f, 0.0f };
     Vec3 cameraUp       = { 0.0f, 0.0f, 1.0f };
 
     f32  aspectRatio = (f32)vs.swapchain.extents.width / (f32)vs.swapchain.extents.height;
 
-    ubo.model = Mat4_rotate(Mat4_Identity, deltaTime * DEG_TO_RAD(25.0f), rotationAxis);
+    ubo.model = Mat4_rotate(Mat4_Identity, deltaTime * DEG_TO_RAD(20.0f), rotationAxis);
     ubo.view  = Mat4_lookAt(cameraPosition, cameraTarget, cameraUp);
-    ubo.projection = Mat4_perspective(DEG_TO_RAD(45.0f), aspectRatio, 0.1f, 100.0f);
+    ubo.projection = Mat4_perspective(DEG_TO_RAD(60.0f), aspectRatio, 0.1f, 100.0f);
 
     memcpy(vs.uniformBuffersMapped[frameIndex], &ubo, sizeof(ubo));
     return ResultOk;
@@ -755,7 +735,7 @@ Result renderer_draw_frame(f32 deltaTime) {
     //
     VkFence frameFence = vs.frameFences[frameIndex];
     if(vkWaitForFences(vs.device, 1, &frameFence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
-        printf("ERROR: Failed to wait for the fence\n");
+        printf("[RS]: Failed to wait for the fence\n");
         return ResultFailure;
     }
 
@@ -765,6 +745,7 @@ Result renderer_draw_frame(f32 deltaTime) {
     VkSemaphore acquireSemaphore = vs.acquireSemaphores[frameIndex];
     VkResult acquireResult = vkAcquireNextImageKHR(vs.device, vs.swapchain.swapChain, UINT64_MAX, acquireSemaphore, nullptr, &imageIndex);
     if(acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+        printf("[RS]: Swapchain of date\n");
         Result rs = Swapchain_recreate(&vs.swapchain, vs.physicalDevice, vs.device, vs.surface);
         Result rd = recreate_depth_buffer();
         if(rs || rd) {
@@ -775,7 +756,7 @@ Result renderer_draw_frame(f32 deltaTime) {
 
     else if(acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
         assert(acquireResult == VK_TIMEOUT || acquireResult == VK_NOT_READY);
-        printf("ERROR: Failed to retrieve next image!\n");
+        printf("[RS]: Failed to retrieve next image!\n");
         return ResultFailure;
     }
     //index submit semaphore by image index rather than in-flight index
@@ -805,7 +786,7 @@ Result renderer_draw_frame(f32 deltaTime) {
     };
 
     if(vkQueueSubmit(vs.graphicsQueue, 1, &submitInfo, frameFence) != VK_SUCCESS) {
-        printf("ERROR: FAiled to submit command buffer to graphics queue\n");
+        printf("[RS]: FAiled to submit command buffer to graphics queue\n");
         return ResultFailure;
     }
 
@@ -833,13 +814,13 @@ Result renderer_draw_frame(f32 deltaTime) {
         recreate_depth_buffer();
     }
     else if(presentResult != VK_SUCCESS) {
-        printf("ERROR: Failed to present image!\n");
+        printf("[RS]: Failed to present image!\n");
         return ResultFailure;
     }
 
     TIMESTEP(frameEndTime);
     if(printFrameTiming) {
-        printf("fence: %llu rec: %llu subm: %llu pre: %llu\n",
+        printf("[RS] fence: %llu rec: %llu subm: %llu pre: %llu\n",
                 recordStartTime - frameStartTime,
                 submitStartTime - recordStartTime,
                 presentStartTime - submitStartTime,
@@ -855,13 +836,13 @@ Result create_pipeline() {
 
     BinaryFile shaderFile = {};
     if(load_binary_file(SHADER_NAME, &shaderFile) != ResultOk) {
-        printf("ERROR: Failed to load shader file!\n");
+        printf("[RS]: Failed to load shader file!\n");
         return ResultFailure;
     }
 
     VkShaderModule shaderModule;
     if(create_shader_module(shaderFile, vs.device, &shaderModule) != ResultOk) {
-        printf("ERROR: Failed to Create Shader Module");
+        printf("[RS]: Failed to Create Shader Module");
         return ResultFailure;
     }
 
@@ -934,13 +915,13 @@ Result create_pipeline() {
     //Rasterizer settings
     VkPipelineRasterizationStateCreateInfo rasterizationStateCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        .depthClampEnable = VK_FALSE,
+        .depthClampEnable        = VK_FALSE,
         .rasterizerDiscardEnable = VK_FALSE,
-        .polygonMode = VK_POLYGON_MODE_FILL,
-        .cullMode = VK_CULL_MODE_BACK_BIT,
-        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
-        .depthBiasEnable = VK_FALSE,
-        .lineWidth = 1.0f
+        .polygonMode             = VK_POLYGON_MODE_FILL,
+        .cullMode                = VK_CULL_MODE_BACK_BIT,
+        .frontFace               = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .depthBiasEnable         = VK_FALSE,
+        .lineWidth               = 1.0f
     };
 
     //Multisampling, (MSAA here?)
@@ -989,7 +970,7 @@ Result create_pipeline() {
     };
 
     if(vkCreatePipelineLayout(vs.device, &pipelineLayoutCreateInfo, nullptr, &vs.pipelineLayout) != VK_SUCCESS) {
-        printf("ERROR: Failed to create pipelineLayout!\n");
+        printf("[RS]: Failed to create pipelineLayout!\n");
         return ResultFailure;
     }
 
@@ -1029,7 +1010,7 @@ Result create_pipeline() {
     };
 
     if(vkCreateGraphicsPipelines(vs.device, nullptr, 1, &pipelineCreateInfo, nullptr, &vs.graphicsPipeline) != VK_SUCCESS) {
-        printf("ERROR: Unable to create graphics pipeline!");
+        printf("[RS]: Unable to create graphics pipeline!");
         return ResultFailure;
     }
 
@@ -1065,7 +1046,7 @@ Result create_buffer(VkDeviceSize size,
     };
 
     if(vkCreateBuffer(vs.device, &bufferInfo, nullptr, buffer) != VK_SUCCESS) {
-        printf("Failed to create buffer!\n");
+        printf("[RS]: Failed to create buffer!\n");
         return ResultFailure;
     }
 
@@ -1079,11 +1060,11 @@ Result create_buffer(VkDeviceSize size,
     };
 
     if(vkAllocateMemory(vs.device, &allocateInfo, nullptr, bufferMemory) != VK_SUCCESS) {
-        printf("Failed to allocate buffer memory\n");
+        printf("[RS]: Failed to allocate buffer memory\n");
         return ResultFailure;
     }
     if(vkBindBufferMemory(vs.device, *buffer, *bufferMemory, 0) != VK_SUCCESS) {
-        printf("Failed to bind buffer memory\n");
+        printf("[RS]: Failed to bind buffer memory\n");
         return ResultFailure;
     }
 
@@ -1104,7 +1085,7 @@ Result begin_single_time_commands(VkCommandBuffer *commandBuffer) {
 
     if(vkAllocateCommandBuffers(vs.device, &allocateInfo, commandBuffer) != VK_SUCCESS) {
         //critical failure, no recovery here
-        printf("Failed to create copy command buffer\n");
+        printf("[RS]: Failed to create copy command buffer\n");
         return ResultFailure;
     }
 
@@ -1148,8 +1129,9 @@ Result copy_buffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
     return ResultOk;
 }
 
-Result create_vertex_buffer(VkBuffer* vertexBuffer, VkDeviceMemory* vertexBufferMemory) {
-    VkDeviceSize bufferSize = sizeof(meshVertices[0]) * NUM_VERTICES;
+Result create_vertex_buffer(Vertex* vertices, u32 numVertices, VkBuffer* vertexBuffer, VkDeviceMemory* vertexBufferMemory) {
+    printf("[RS]: Creating Vertex Buffer, %d vertices\n", numVertices);
+    VkDeviceSize bufferSize = sizeof(Vertex) * numVertices;
     VkBuffer stagingBuffer = VK_NULL_HANDLE;
     VkDeviceMemory stagingBufferMemory = VK_NULL_HANDLE;
     void* stagingData = nullptr;
@@ -1160,13 +1142,13 @@ Result create_vertex_buffer(VkBuffer* vertexBuffer, VkDeviceMemory* vertexBuffer
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                     &stagingBuffer,
                     &stagingBufferMemory) != ResultOk) {
-        printf("Failed to create staging Buffer\n");
+        printf("[RS]: Failed to create staging Buffer\n");
         return ResultFailure;
     }
 
     //first allocate the memory in vulkan and set data to point to it
     vkMapMemory(vs.device, stagingBufferMemory, 0, bufferSize, 0, &stagingData);
-    memcpy(stagingData, meshVertices, bufferSize);
+    memcpy(stagingData, vertices, bufferSize);
     vkUnmapMemory(vs.device, stagingBufferMemory);
 
     if(create_buffer(bufferSize,
@@ -1174,7 +1156,7 @@ Result create_vertex_buffer(VkBuffer* vertexBuffer, VkDeviceMemory* vertexBuffer
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                     vertexBuffer,
                     vertexBufferMemory) != ResultOk) {
-        printf("Failed to create Vertex Buffer!\n");
+        printf("[RS]: Failed to create Vertex Buffer!\n");
         return ResultFailure;
     }
 
@@ -1187,8 +1169,9 @@ Result create_vertex_buffer(VkBuffer* vertexBuffer, VkDeviceMemory* vertexBuffer
     return ResultOk;
 }
 
-Result create_index_buffer(VkBuffer* indexBuffer, VkDeviceMemory* indexBufferMemory) {
-    VkDeviceSize bufferSize = sizeof(meshIndices[0]) * NUM_INDICES;
+Result create_index_buffer(u32* indices, u32 numIndices, VkBuffer* indexBuffer, VkDeviceMemory* indexBufferMemory) {
+    printf("[RS]: Creating Index Buffer, %d indices\n", numIndices);
+    VkDeviceSize bufferSize = sizeof(u32) * numIndices;
     VkBuffer stagingBuffer = VK_NULL_HANDLE;
     VkDeviceMemory stagingBufferMemory = VK_NULL_HANDLE;
     void* stagingData = nullptr;
@@ -1199,13 +1182,13 @@ Result create_index_buffer(VkBuffer* indexBuffer, VkDeviceMemory* indexBufferMem
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                     &stagingBuffer,
                     &stagingBufferMemory) != ResultOk) {
-        printf("Failed to create staging Buffer\n");
+        printf("[RS]: Failed to create staging Buffer\n");
         return ResultFailure;
     }
 
-    //first allocate the memory in vulkan and set data to point to it
+    //allocate the memory in vulkan and set data to point to it
     vkMapMemory(vs.device, stagingBufferMemory, 0, bufferSize, 0, &stagingData);
-    memcpy(stagingData, meshIndices, bufferSize);
+    memcpy(stagingData, indices, bufferSize);
     vkUnmapMemory(vs.device, stagingBufferMemory);
 
     if(create_buffer(bufferSize,
@@ -1213,7 +1196,7 @@ Result create_index_buffer(VkBuffer* indexBuffer, VkDeviceMemory* indexBufferMem
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                     indexBuffer,
                     indexBufferMemory) != ResultOk) {
-        printf("Failed to create Index Buffer!\n");
+        printf("[RS]: Failed to create Index Buffer!\n");
         return ResultFailure;
     }
 
@@ -1238,7 +1221,7 @@ Result create_uniform_buffers() {
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                 &vs.uniformBuffers[i], &vs.uniformBuffersMemory[i]);
         if(vkMapMemory(vs.device, vs.uniformBuffersMemory[i], 0, bufferSize, 0, &vs.uniformBuffersMapped[i]) != VK_SUCCESS) {
-            printf("Failed to map UBO memory!\n");
+            printf("[RS]: Failed to map UBO memory!\n");
             return ResultFailure;
         }
     }
@@ -1265,7 +1248,7 @@ Result create_descriptor_pools(u32 descriptorCount) {
         .pPoolSizes = poolSizes,
     };
     if(vkCreateDescriptorPool(vs.device, &poolCreateInfo, nullptr, &vs.descriptorPool) != VK_SUCCESS) {
-        printf("Failed to create descriptor pools!\n");
+        printf("[RS]: Failed to create descriptor pools!\n");
         return ResultFailure;
     }
     return ResultOk;
@@ -1290,7 +1273,7 @@ Result create_descriptor_sets(u32 descriptorCount) {
     vs.descriptorSets = calloc(descriptorCount, sizeof(VkDescriptorSet)); 
     if(vs.descriptorSets == nullptr ||
        vkAllocateDescriptorSets(vs.device, &allocInfo, vs.descriptorSets) != VK_SUCCESS) {
-        printf("Failed to allocate descriptorSets!\n");
+        printf("[RS]: Failed to allocate descriptorSets!\n");
         return ResultFailure;
     }
 
@@ -1376,7 +1359,7 @@ Result create_image(u32 width, u32 height,
     };
 
     if(vkAllocateMemory(vs.device, &allocInfo, nullptr, imageMemory) != VK_SUCCESS) {
-        printf("Error! Failed to allocate memory for image!\n");
+        printf("[RS]: Failed to allocate memory for image!\n");
         return ResultFailure;
     }
 
@@ -1423,7 +1406,7 @@ Result create_texture(Image fileImage, VkImage* image, VkDeviceMemory* imageMemo
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                     &stagingBuffer,
                     &stagingBufferMemory) != ResultOk) {
-        printf("Failed to create staging Buffer\n");
+        printf("[RS]: Failed to create staging Buffer\n");
         return ResultFailure;
     }
 
@@ -1440,7 +1423,7 @@ Result create_texture(Image fileImage, VkImage* image, VkDeviceMemory* imageMemo
                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                  image,
                  imageMemory) != ResultOk) {
-        printf("Failed to create temp texture image\n");
+        printf("[RS]: Failed to create temp texture image\n");
         return ResultFailure;
     }
 
@@ -1470,7 +1453,7 @@ Result create_texture(Image fileImage, VkImage* image, VkDeviceMemory* imageMemo
     return ResultOk; 
 }
 
-Result create_imageview(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, VkImageView* imageView) {
+Result create_imageview(const VkImage image, const VkFormat format, const VkImageAspectFlags aspectFlags, VkImageView* imageView) {
     VkImageViewCreateInfo viewInfo = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = image,
@@ -1478,12 +1461,14 @@ Result create_imageview(VkImage image, VkFormat format, VkImageAspectFlags aspec
         .format = format,
         .subresourceRange = {
             .aspectMask = aspectFlags,
+            .baseMipLevel = 0,
             .levelCount = 1,
+            .baseArrayLayer = 0,
             .layerCount = 1,
         },
     };
     if(vkCreateImageView(vs.device, &viewInfo, nullptr, imageView) != VK_SUCCESS) {
-        printf("Failed to create image view for texture!\n");
+        printf("[RS]: Failed to create image view for texture!\n");
         return ResultFailure;
     }
 
@@ -1518,14 +1503,14 @@ Result create_texture_sampler() {
     };
 
     if(vkCreateSampler(vs.device, &createInfo, nullptr, &vs.textureSampler) != VK_SUCCESS) {
-        printf("Failed to create sampler for texture!\n");
+        printf("[RS]: Failed to create sampler for texture!\n");
         return ResultFailure;
     }
 
     return ResultOk;
 }
 
-Result find_suitable_format(VkFormat* candidates, u32 candidate_count, VkImageTiling tiling, VkFormatFeatureFlags features, VkFormat* chosenFormat) {
+Result find_suitable_format(const VkFormat* candidates, const u32 candidate_count, const VkImageTiling tiling, const VkFormatFeatureFlags features, VkFormat* chosenFormat) {
     for(u32 i = 0; i < candidate_count; i++) {
         VkFormatProperties props;
         vkGetPhysicalDeviceFormatProperties(vs.physicalDevice, candidates[i], &props);
@@ -1539,22 +1524,23 @@ Result find_suitable_format(VkFormat* candidates, u32 candidate_count, VkImageTi
         }
     }
 
-    printf("Failed to find a suitable depth buffer format!\n");
+    printf("[RS]: Failed to find a suitable depth buffer format!\n");
     return ResultFailure;
 }
 
-#define DEPTH_BUFFER_FORMAT_COUNT 3
 Result create_depth_buffer() {
-    VkFormat dbufFormatCandidates[DEPTH_BUFFER_FORMAT_COUNT] = {
+#define DEPTH_BUFFER_FORMAT_CANDIDATE_COUNT 3
+    const VkFormat formatCandidates[DEPTH_BUFFER_FORMAT_CANDIDATE_COUNT] = {
         VK_FORMAT_D32_SFLOAT,
         VK_FORMAT_D32_SFLOAT_S8_UINT,
         VK_FORMAT_D24_UNORM_S8_UINT,
     };
-    if(find_suitable_format(dbufFormatCandidates, DEPTH_BUFFER_FORMAT_COUNT, 
+    if(find_suitable_format(formatCandidates,
+                            DEPTH_BUFFER_FORMAT_CANDIDATE_COUNT, 
                             VK_IMAGE_TILING_OPTIMAL,
                             VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT,
                             &vs.depthBufferFormat) != ResultOk) {
-        printf("Failed to find a suitable format for depth buffer!\n");
+        printf("[RS]: Failed to find a suitable format for depth buffer!\n");
         return ResultFailure;
     };
 
@@ -1564,7 +1550,7 @@ Result create_depth_buffer() {
                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                      &vs.depthBufferImage, &vs.depthBufferMemory) != ResultOk) {
-        printf("Failed to create depth buffer image\n");
+        printf("[RS]: Failed to create depth buffer image\n");
         return ResultFailure;
     }
 
@@ -1572,11 +1558,11 @@ Result create_depth_buffer() {
                         vs.depthBufferFormat,
                         VK_IMAGE_ASPECT_DEPTH_BIT,
                         &vs.depthBufferImageView) != ResultOk) {
-        printf("Failed to create depth buffer image view\n");
+        printf("[RS]: Failed to create depth buffer image view\n");
         return ResultFailure;
     }
 
-
+    printf("[RS]: Depth buffer created\n");
     return ResultOk;
 }
 

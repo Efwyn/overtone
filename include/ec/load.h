@@ -8,6 +8,7 @@
 #pragma once
 
 #include "ec/types.h"
+#include "rs/vertex.h"
 
 #include <stdlib.h>         //calloc
 #include <stdio.h>          //printf
@@ -25,7 +26,15 @@ typedef struct Image {
     u32 height;
 } Image;
 
+typedef struct MeshData {
+    Vertex* vertices;
+    u32* indices;
+    u32 vertexCount;
+    u32 indexCount;
+} MeshData;
+
 Result load_binary_file(const char* filename, BinaryFile* file);
 Result create_shader_module(BinaryFile shaderFile, VkDevice device, VkShaderModule* shaderModule);
 Result load_img_bmp(Image* img, BinaryFile file);
 Result load_image(const char* filename, Image* img);
+Result load_obj_file(const char* filename, MeshData* meshData);

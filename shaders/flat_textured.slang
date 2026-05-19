@@ -1,5 +1,5 @@
 // ====================================
-// File:        traingle.slang
+// File:        flat_textured.slang
 // Author:      Morgan Carpenetti
 // Description: 
 // Created On:  4/25/2026
@@ -34,5 +34,5 @@ Sampler2D texture;
 
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_TARGET {
-    return float4(texture.Sample(vertIn.fragTexCoord).rgb, 1.0);
+    return float4(texture.Sample(vertIn.fragTexCoord));
 }

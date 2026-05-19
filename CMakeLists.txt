@@ -60,7 +60,7 @@ add_executable(hello src/main.c src/ec/load.c src/pf/window.c src/ec/timer.c src
 target_include_directories(hello PUBLIC ./include)
 target_link_libraries(hello PRIVATE Vulkan::Vulkan)
 
-add_shaders(hello_shaders shaders/triangle.slang)
+add_shaders(hello_shaders shaders/flat_textured.slang)
 add_dependencies(hello hello_shaders)
 
 if(MSVC)
